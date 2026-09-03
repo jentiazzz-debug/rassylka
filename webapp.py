@@ -18,9 +18,12 @@ import hashlib
 import hmac
 import json
 import logging
+import os
+import tempfile
 import time
 import urllib.parse
 from functools import wraps
+from pathlib import Path
 
 from aiohttp import web
 
@@ -29,6 +32,7 @@ import broadcast
 import chats
 import config
 import db
+import tdata
 
 log = logging.getLogger("rassylka.webapp")
 
@@ -146,6 +150,7 @@ def _account_view(account: db.Account) -> dict:
         "name": account.title,
         "username": account.username,
         "status": account.status,
+        "source": account.source,
         "note": account.note,
         "added_at": account.added_at,
         "checked_at": account.checked_at,
@@ -196,6 +201,8 @@ async def _state(user_id: int) -> dict:
         },
         "support_url": config.SUPPORT_URL,
         "mtproto_ready": config.mtproto_ready(),
+        "tdata_ready": tdata.available(),
+        "max_tdata_mb": config.MAX_TDATA_MB,
     }
 
 
@@ -314,6 +321,103 @@ async def api_account_forget(
     if not await accounts.forget(int(user["id"]), account_id):
         return _fail("Такого аккаунта нет.")
     return web.json_response({"ok": True})
+
+
+# --- импорт из tdata --------------------------------------------------
+
+
+async def api_account_tdata(request: web.Request) -> web.Response:
+    """Приём архива с tdata.
+
+    Отдельно от остальных ручек и без декоратора: тело здесь не JSON, а
+    multipart с файлом, и подпись приходится брать из заголовка. Файл
+    пишется на диск потоком с проверкой размера — целиком в память его
+    принимать нельзя, туда прилетит что угодно.
+    """
+    user = parse_init_data(request.headers.get(INIT_HEADER, ""))
+    if user is None:
+        return web.json_response(
+            {"ok": False, "error": "Откройте приложение из бота заново."},
+            status=401,
+        )
+    user_id = int(user["id"])
+
+    if not tdata.available():
+        return _fail(
+            "Импорт из tdata не настроен на сервере. Напишите в поддержку."
+        )
+    if await db.count_accounts(user_id) >= config.MAX_ACCOUNTS:
+        return _fail(
+            f"Больше {config.MAX_ACCOUNTS} аккаунтов подключить нельзя."
+        )
+
+    limit = config.MAX_TDATA_MB * 1024 * 1024
+    passcode = ""
+    archive: Path | None = None
+
+    try:
+        reader = await request.multipart()
+    except Exception:
+        return _fail("Файл не пришёл. Попробуйте ещё раз.")
+
+    try:
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if part.name == "passcode":
+                # Код-пароль нигде не сохраняется и не пишется в лог: он
+                # нужен ровно на время разбора архива.
+                passcode = (await part.text()).strip()
+                continue
+            if part.name != "file":
+                continue
+
+            handle, path = tempfile.mkstemp(suffix=".zip", dir=config.DATA_DIR)
+            archive = Path(path)
+            size = 0
+            with os.fdopen(handle, "wb") as out:
+                while True:
+                    chunk = await part.read_chunk(256 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > limit:
+                        return _fail(
+                            f"Архив больше {config.MAX_TDATA_MB} МБ. "
+                            "Заархивируйте только папку tdata."
+                        )
+                    out.write(chunk)
+
+        if archive is None or not archive.exists() or archive.stat().st_size == 0:
+            return _fail("Прикрепите zip-архив с папкой tdata.")
+
+        try:
+            result = await tdata.import_zip(user_id, archive, passcode)
+        except tdata.TdataError as error:
+            return _fail(error.message)
+
+        if not result["added"]:
+            reason = (result["failed"] or [{}])[0].get("error")
+            return _fail(
+                "Ни один аккаунт подключить не вышло"
+                + (f": {reason}." if reason else ".")
+            )
+        return web.json_response(
+            {
+                "ok": True,
+                "added": result["added"],
+                "failed": result["failed"],
+                "accounts": [
+                    _account_view(a) for a in await db.accounts(user_id)
+                ],
+            }
+        )
+    finally:
+        # Архив с чужими ключами не должен остаться на диске ни при
+        # удаче, ни при ошибке, ни при обрыве загрузки.
+        if archive is not None:
+            archive.unlink(missing_ok=True)
 
 
 # --- чаты и папки -----------------------------------------------------
@@ -555,7 +659,12 @@ async def health(request: web.Request) -> web.Response:
 
 
 def build() -> web.Application:
-    app = web.Application()
+    # client_max_size поднят под архив с tdata: по умолчанию aiohttp
+    # отклоняет тело больше мегабайта, а архив на порядок больше.
+    # Свой потолок и проверка размера потоком — в api_account_tdata.
+    app = web.Application(
+        client_max_size=config.MAX_TDATA_MB * 1024 * 1024 + 1024 * 1024
+    )
     app.add_routes(
         [
             web.get("/", page),
@@ -568,6 +677,7 @@ def build() -> web.Application:
             web.post("/api/login/cancel", api_login_cancel),
             web.post("/api/account/verify", api_account_verify),
             web.post("/api/account/forget", api_account_forget),
+            web.post("/api/account/tdata", api_account_tdata),
             web.post("/api/chats", api_chats),
             web.post("/api/chats/scan", api_chats_scan),
             web.post("/api/campaign/create", api_campaign_create),

@@ -18,8 +18,8 @@ let login = null;
 const $ = (id) => document.getElementById(id);
 
 const SCREENS = [
-  'loading', 'main', 'phone', 'code', 'password', 'done', 'new', 'log',
-  'outside',
+  'loading', 'main', 'phone', 'code', 'password', 'done', 'tdata', 'new',
+  'log', 'outside',
 ];
 
 /** Экраны входа по номеру: с них «назад» отменяет вход на сервере. */
@@ -167,7 +167,8 @@ function accountRow(account) {
 
   const phone = document.createElement('span');
   phone.className = 'account-phone';
-  phone.textContent = account.username ? '@' + account.username : account.phone;
+  phone.textContent = (account.username ? '@' + account.username : account.phone)
+    + (account.source === 'tdata' ? ' · tdata' : '');
   top.appendChild(phone);
 
   row.appendChild(top);
@@ -234,6 +235,12 @@ function renderAccounts() {
   const full = state.accounts.length >= state.limits.max_accounts;
   const button = $('add-account');
   button.disabled = full || !state.mtproto_ready;
+  // Загрузку tdata прячем совсем, когда библиотека разбора не стоит на
+  // сервере: кнопка, которая всегда отвечает «не настроено», только
+  // мешает.
+  const tdataButton = $('add-tdata');
+  tdataButton.hidden = !state.tdata_ready;
+  tdataButton.disabled = full;
   const note = $('limit-note');
   if (!state.mtproto_ready) {
     note.textContent =
@@ -451,6 +458,70 @@ async function refresh() {
   state = result;
   login = result.pending || null;
   renderMain();
+}
+
+// --- импорт из tdata ---------------------------------------------------
+
+function openTdata() {
+  fail('tdata-err', '');
+  $('tdata-note').hidden = true;
+  $('tdata-file').value = '';
+  $('tdata-passcode').value = '';
+  show('tdata');
+}
+
+async function uploadTdata() {
+  const button = $('tdata-send');
+  fail('tdata-err', '');
+  $('tdata-note').hidden = true;
+
+  const file = $('tdata-file').files[0];
+  if (!file) {
+    fail('tdata-err', 'Прикрепите zip-архив с папкой tdata.');
+    return;
+  }
+  // Размер проверяем и здесь: гнать на сервер сто мегабайт, чтобы он
+  // ответил отказом, — это минуты ожидания на мобильном интернете.
+  const limit = (state.max_tdata_mb || 64) * 1024 * 1024;
+  if (file.size > limit) {
+    fail('tdata-err', `Архив больше ${state.max_tdata_mb} МБ.`);
+    return;
+  }
+
+  const body = new FormData();
+  body.append('file', file);
+  body.append('passcode', $('tdata-passcode').value);
+
+  const done = busy(button, 'Загружаем…');
+  let result;
+  try {
+    // Свой fetch, не общий api(): тело здесь multipart, и подпись
+    // приходится класть в заголовок — в JSON её не подмешать.
+    const response = await fetch('/api/account/tdata', {
+      method: 'POST',
+      headers: { 'X-Init-Data': (tg && tg.initData) || '' },
+      body,
+    });
+    result = await response.json();
+  } catch (error) {
+    result = { ok: false, error: 'Файл не дошёл. Попробуйте ещё раз.' };
+  }
+  done();
+  // Код-пароль в поле не оставляем: приложение сворачивают, а не
+  // закрывают, и он лежал бы там до перезагрузки страницы.
+  $('tdata-passcode').value = '';
+
+  if (!result.ok) {
+    fail('tdata-err', result.error);
+    return;
+  }
+
+  haptic('success');
+  const names = result.added.map((a) => a.name).join(', ');
+  const failed = (result.failed || []).length;
+  $('done-who').textContent = names
+    + (failed ? ` · не вышло: ${failed}` : '');
+  show('done');
 }
 
 // --- создание рассылки -------------------------------------------------
@@ -872,6 +943,8 @@ function wire() {
     button.onclick = refresh;
   }
 
+  $('add-tdata').onclick = openTdata;
+  $('tdata-send').onclick = uploadTdata;
   $('add-campaign').onclick = openNew;
   $('rescan').onclick = rescan;
   $('campaign-start').onclick = createCampaign;

@@ -10,10 +10,23 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Системная библиотека для PyQt5, который тянет за собой opentele
+# (разбор tdata). В slim-образе её нет, и без неё импорт падает уже на
+# загрузке Qt. Нужен только QtCore, поэтому графических библиотек тут
+# нет — glib достаточно.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Зависимости отдельным слоем: пересобираются только при правке
 # requirements.txt, а не на каждое изменение кода.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Проверка на сборке, а не в бою. Импорт tdata ленивый: без этой строки
+# нехватка системных библиотек всплыла бы только когда человек уже
+# загрузил архив, и выглядела бы как «не настроено на сервере».
+RUN python -c "from opentele.td import TDesktop; print('opentele ok')"
 
 COPY . .
 

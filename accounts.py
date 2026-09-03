@@ -427,10 +427,41 @@ async def cancel(token: str) -> None:
 # --- работа с уже подключённым аккаунтом ------------------------------
 
 
+def _api_params(account: db.Account) -> dict:
+    """Ключи и параметры устройства для подключения к этому аккаунту.
+
+    У аккаунта из tdata они свои и обязаны совпадать с теми, под
+    которыми Telegram Desktop выдавал сессию. Подключиться к чужой
+    сессии нашим api_id — верный способ её потерять: для Telegram это
+    выглядит как угон, и сессию отзывают. Поэтому параметры сохраняются
+    при импорте и берутся отсюда, а не из .env.
+    """
+    saved = account.api or {}
+    if saved.get("api_id") and saved.get("api_hash"):
+        return {
+            "api_id": int(saved["api_id"]),
+            "api_hash": str(saved["api_hash"]),
+            "device_model": saved.get("device_model") or DEVICE_MODEL,
+            "system_version": saved.get("system_version") or "Windows 10",
+            "app_version": saved.get("app_version") or APP_VERSION,
+            "lang_code": saved.get("lang_code") or "ru",
+            "system_lang_code": saved.get("system_lang_code") or "ru",
+        }
+    return {
+        "api_id": config.MTPROTO_API_ID,
+        "api_hash": config.MTPROTO_API_HASH,
+        "device_model": DEVICE_MODEL,
+        "system_version": "Windows 10",
+        "app_version": APP_VERSION,
+        "lang_code": "ru",
+        "system_lang_code": "ru",
+    }
+
+
 async def client_for(account: db.Account):
     """Подключённый клиент по сохранённой сессии.
 
-    Ради этой функции всё и делалось: рассылка будет брать клиент отсюда.
+    Ради этой функции всё и делалось: рассылка берёт клиент отсюда.
     Закрывать его — забота вызывающего.
     """
     from telethon import TelegramClient
@@ -442,16 +473,7 @@ async def client_for(account: db.Account):
             "Сессия этого аккаунта больше не читается — подключите его заново.",
             restart=True,
         )
-    client = TelegramClient(
-        StringSession(session),
-        config.MTPROTO_API_ID,
-        config.MTPROTO_API_HASH,
-        device_model=DEVICE_MODEL,
-        system_version="Windows 10",
-        app_version=APP_VERSION,
-        lang_code="ru",
-        system_lang_code="ru",
-    )
+    client = TelegramClient(StringSession(session), **_api_params(account))
     await client.connect()
     return client
 
@@ -492,6 +514,11 @@ async def verify(user_id: int, account_id: int) -> db.Account | None:
                 )
                 or None,
                 username=getattr(me, "username", None),
+                # Ключи и способ подключения переносим как были: запись
+                # обновляется целиком, и без них аккаунт из tdata после
+                # проверки остался бы с нашими ключами — то есть сломался бы.
+                api=account.api,
+                source=account.source,
             )
     except LoginError:
         await db.mark_account(account.id, "dead", "сессия не читается")

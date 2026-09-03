@@ -35,7 +35,8 @@
       в личные сообщения, в группы и в чаты, где он уже есть.
     </p>
 
-    <button id="add-account" class="btn primary">Подключить аккаунт</button>
+    <button id="add-account" class="btn primary">Подключить по номеру</button>
+    <button id="add-tdata" class="btn ghost">Загрузить tdata</button>
     <p id="limit-note" class="hint center" hidden></p>
 
     <p class="hint small">
@@ -151,6 +152,41 @@
     <button class="btn ghost" data-back>Отмена</button>
     <p class="hint small">
       Пароль уходит только в Telegram — мы его не сохраняем.
+    </p>
+  </section>
+
+  <!-- Импорт аккаунтов из папки Telegram Desktop. -->
+  <section id="screen-tdata" class="screen" hidden>
+    <h2 class="section-title">Загрузить tdata</h2>
+    <p class="hint">
+      tdata — папка Telegram Desktop с уже выполненным входом. Лежит
+      рядом с Telegram.exe. Заархивируйте её в <b>zip</b> и прикрепите
+      здесь: аккаунт подключится без номера и кода.
+    </p>
+    <p class="hint">
+      Если в одной tdata несколько аккаунтов — подключатся все, сколько
+      поместится в ваш лимит.
+    </p>
+
+    <input id="tdata-file" class="field" type="file" accept=".zip,application/zip">
+
+    <label class="label" for="tdata-passcode">Код-пароль (если стоит)</label>
+    <input id="tdata-passcode" class="field" type="password"
+           autocomplete="off" placeholder="Локальный код Telegram Desktop">
+    <p class="hint small">
+      Это локальный код, которым Telegram Desktop закрывает саму папку, —
+      не облачный пароль. Если его нет, оставьте поле пустым.
+    </p>
+
+    <p class="err" id="tdata-err" hidden></p>
+    <p class="hint" id="tdata-note" hidden></p>
+    <button id="tdata-send" class="btn primary">Загрузить</button>
+    <button class="btn ghost" data-home>Отмена</button>
+
+    <p class="hint small">
+      Архив разбирается на сервере и стирается сразу после импорта —
+      сохраняется только ключ сессии, зашифрованным. Но учтите: tdata
+      это полный доступ к аккаунту, и загружать чужие папки не стоит.
     </p>
   </section>
 

@@ -56,6 +56,14 @@ CREATE TABLE IF NOT EXISTS accounts (
     added_at   INTEGER NOT NULL,
     checked_at INTEGER NOT NULL DEFAULT 0,
     note       TEXT,
+    -- Ключи и параметры устройства, с которыми аккаунт заходил (JSON).
+    -- Пусто — вход по номеру нашими общими ключами. У аккаунта из tdata
+    -- ключи чужие: подключаться к нему нашими нельзя, Telegram Desktop
+    -- выдавал сессию под свой api_id, и смена ключа на живой сессии —
+    -- прямой путь к её отзыву.
+    api        TEXT,
+    -- phone | tdata: чем аккаунт подключали. Нужно только для показа.
+    source     TEXT    NOT NULL DEFAULT 'phone',
     UNIQUE (user_id, phone)
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id);
@@ -162,8 +170,40 @@ async def connect() -> None:
     await _db.execute("PRAGMA journal_mode=WAL")
     await _db.execute("PRAGMA foreign_keys=ON")
     await _db.executescript(SCHEMA)
+    await _migrate()
     await _db.commit()
     log.info("база готова: %s", config.DB_PATH)
+
+
+async def _migrate() -> None:
+    """Доращивание схемы на уже живой базе.
+
+    CREATE TABLE IF NOT EXISTS новых колонок не добавляет: у тех, кто
+    обновился, таблица уже есть, и новое поле в ней не появится само.
+    Без этого обновление роняет бота на первом же запросе к колонке,
+    которой нет, — причём только на боевой базе, а не на чистой.
+    """
+    await _ensure_column(
+        "accounts",
+        "api",
+        # Ключи и параметры устройства, с которыми заходили. Для входа по
+        # номеру пусто — там наши общие ключи из .env.
+        "ALTER TABLE accounts ADD COLUMN api TEXT",
+    )
+    await _ensure_column(
+        "accounts",
+        "source",
+        "ALTER TABLE accounts ADD COLUMN source TEXT NOT NULL DEFAULT 'phone'",
+    )
+
+
+async def _ensure_column(table: str, column: str, ddl: str) -> None:
+    async with _conn().execute(f"PRAGMA table_info({table})") as cursor:
+        columns = {row["name"] for row in await cursor.fetchall()}
+    if column in columns:
+        return
+    await _conn().execute(ddl)
+    log.info("схема: в %s добавлена колонка %s", table, column)
 
 
 async def close() -> None:
@@ -287,6 +327,10 @@ class Account:
     added_at: int
     checked_at: int
     note: str | None
+    #: Ключи и параметры устройства этого аккаунта. None — общие из .env.
+    api: dict | None = None
+    #: phone | tdata
+    source: str = "phone"
     #: Зашифрованная строка сессии. Наружу, в мини-апп, не уходит никогда.
     session: str = ""
 
@@ -307,6 +351,8 @@ def _account(row: aiosqlite.Row) -> Account:
         added_at=row["added_at"],
         checked_at=row["checked_at"],
         note=row["note"],
+        api=_json(row["api"]) if "api" in row.keys() else None,
+        source=(row["source"] if "source" in row.keys() else None) or "phone",
         session=row["session"] if "session" in row.keys() else "",
     )
 
@@ -350,6 +396,8 @@ async def save_account(
     tg_id: int | None,
     name: str | None,
     username: str | None,
+    api: dict | None = None,
+    source: str = "phone",
 ) -> int:
     """Записать удачный вход. Повторный вход по тому же номеру обновляет запись.
 
@@ -361,8 +409,9 @@ async def save_account(
     await _conn().execute(
         """
         INSERT INTO accounts (user_id, phone, tg_id, name, username,
-                              session, status, added_at, checked_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?)
+                              session, status, added_at, checked_at,
+                              api, source)
+        VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?)
         ON CONFLICT (user_id, phone) DO UPDATE SET
             tg_id      = excluded.tg_id,
             name       = excluded.name,
@@ -370,9 +419,12 @@ async def save_account(
             session    = excluded.session,
             status     = 'ok',
             checked_at = excluded.checked_at,
+            api        = excluded.api,
+            source     = excluded.source,
             note       = NULL
         """,
-        (user_id, phone, tg_id, name, username, session, now, now),
+        (user_id, phone, tg_id, name, username, session, now, now,
+         json.dumps(api) if api else None, source),
     )
     await _conn().commit()
     row = await _fetchone(
@@ -869,6 +921,16 @@ async def stats() -> dict[str, int]:
 
 
 # --- мелочи -----------------------------------------------------------
+
+
+def _json(raw):
+    if not raw:
+        return None
+    try:
+        found = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return found if isinstance(found, dict) else None
 
 
 async def _fetchone(sql: str, args: tuple = ()) -> aiosqlite.Row | None:

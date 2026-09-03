@@ -48,6 +48,7 @@ import crypto  # noqa: E402
 import db  # noqa: E402
 import handlers  # noqa: E402
 import keyboards  # noqa: E402
+import tdata  # noqa: E402
 import texts  # noqa: E402
 import webapp  # noqa: E402
 
@@ -315,6 +316,7 @@ async def check_api() -> None:
             "/api/login/password",
             "/api/account/verify",
             "/api/account/forget",
+            "/api/account/tdata",
         ):
             answer = await client.post(path, json={"phone": "+79990000000", "id": 1})
             check(f"{path} без подписи: отказ", answer.status == 401)
@@ -666,6 +668,157 @@ async def check_folders() -> None:
     await db.delete_campaign(USER, campaign_id)
 
 
+async def check_tdata() -> None:
+    print("\nИмпорт из tdata")
+    import shutil
+    import zipfile
+
+    check("библиотека разбора на месте", tdata.available())
+
+    work = _temp / "tdzip"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+
+    # Архив с путями, вырывающимися наружу. Имя внутри zip — просто
+    # строка, и «../» в ней при наивной распаковке пишет мимо папки.
+    evil = work / "evil.zip"
+    with zipfile.ZipFile(evil, "w") as bundle:
+        bundle.writestr("../сбежал.txt", "не должен появиться")
+        bundle.writestr("../../тоже-сбежал.txt", "и этот")
+        bundle.writestr("/абсолютный.txt", "и этот")
+        bundle.writestr("tdata/key_data", "притворяюсь ключом")
+
+    target = work / "out"
+    target.mkdir()
+    tdata._safe_extract(evil, target)
+    escaped = [
+        (work / "сбежал.txt").exists(),
+        (work.parent / "тоже-сбежал.txt").exists(),
+        (target / "абсолютный.txt").exists(),
+    ]
+    check("пути с ../ наружу не пишут", not any(escaped), str(escaped))
+    check("нормальный файл распаковался", (target / "tdata" / "key_data").exists())
+
+    # tdata ищется по файлу ключа, как бы её ни заархивировали.
+    check("tdata находится вложенной", tdata.find_tdata(target) == target / "tdata")
+    check("и когда заархивировали её саму",
+          tdata.find_tdata(target / "tdata") == target / "tdata")
+    empty = work / "пусто"
+    empty.mkdir()
+    check("и не находится там, где её нет", tdata.find_tdata(empty) is None)
+
+    # Потолки размера и числа файлов.
+    saved_size, saved_count = tdata.MAX_UNPACKED, tdata.MAX_ENTRIES
+    tdata.MAX_UNPACKED = 5
+    try:
+        tdata._safe_extract(evil, target)
+        check("архив-бомба отбивается", False, "исключения не было")
+    except tdata.TdataError as error:
+        check("архив-бомба отбивается", "большой" in error.message, error.message)
+    finally:
+        tdata.MAX_UNPACKED = saved_size
+
+    tdata.MAX_ENTRIES = 1
+    try:
+        tdata._safe_extract(evil, target)
+        check("слишком много файлов отбивается", False, "исключения не было")
+    except tdata.TdataError as error:
+        check("слишком много файлов отбивается", "много" in error.message,
+              error.message)
+    finally:
+        tdata.MAX_ENTRIES = saved_count
+
+    # Не-архив.
+    junk = work / "не-архив.zip"
+    junk.write_text("просто текст", encoding="utf-8")
+    try:
+        tdata._safe_extract(junk, target)
+        check("не-zip отбивается", False, "исключения не было")
+    except tdata.TdataError as error:
+        check("не-zip отбивается", "zip" in error.message.lower(), error.message)
+
+    # Архив без tdata внутри — понятный отказ, а не падение.
+    plain = work / "чужой.zip"
+    with zipfile.ZipFile(plain, "w") as bundle:
+        bundle.writestr("фото.jpg", "не тдата")
+    try:
+        await tdata.import_zip(USER, plain)
+        check("архив без tdata отбивается", False, "исключения не было")
+    except tdata.TdataError as error:
+        check("архив без tdata отбивается", "tdata" in error.message.lower(),
+              error.message)
+
+    # После импорта временных папок остаться не должно: там лежат ключи
+    # от чужих аккаунтов.
+    leftovers = list(config.DATA_DIR.glob("tdata-*"))
+    check("временные папки убираются", not leftovers, str(leftovers))
+
+    # Тексты ошибок opentele переводятся на человеческий.
+    class PasswordIncorrect(Exception):
+        pass
+
+    class TFileNotFound(Exception):
+        pass
+
+    check("неверный код-пароль объясняется",
+          "код-пароль" in tdata._explain(PasswordIncorrect()).lower())
+    check("не-tdata объясняется",
+          "tdata" in tdata._explain(TFileNotFound()).lower())
+
+
+async def check_account_api() -> None:
+    print("\nКлючи аккаунта из tdata")
+
+    desktop = {
+        "api_id": 2040,
+        "api_hash": "b18441a1ff607e10a989891a5462e627",
+        "device_model": "Desktop",
+        "system_version": "Windows 11",
+        "app_version": "4.9.0 x64",
+        "lang_code": "en",
+        "system_lang_code": "en-US",
+    }
+    account_id = await db.save_account(
+        USER, "+79990000200", crypto.encrypt("s"), tg_id=9,
+        name="Из tdata", username=None, api=desktop, source="tdata",
+    )
+    saved = await db.account(USER, account_id)
+    check("способ подключения запомнен", saved.source == "tdata", saved.source)
+    check("ключи запомнены", saved.api == desktop, str(saved.api))
+
+    # Главное: такой аккаунт обязан ходить своими ключами. Подключиться
+    # к чужой сессии нашим api_id — верный способ её потерять.
+    params = accounts._api_params(saved)
+    check("подключение идёт ключами из tdata", params["api_id"] == 2040,
+          str(params["api_id"]))
+    check("и устройством из tdata", params["device_model"] == "Desktop",
+          params["device_model"])
+
+    # А аккаунт со входом по номеру — общими из .env.
+    config.MTPROTO_API_ID, config.MTPROTO_API_HASH = 777, "наш-хэш"
+    phone_id = await db.save_account(
+        USER, "+79990000201", crypto.encrypt("s"), tg_id=10,
+        name="По номеру", username=None,
+    )
+    by_phone = await db.account(USER, phone_id)
+    check("вход по номеру — без своих ключей", by_phone.api is None)
+    check("и подключается общими",
+          accounts._api_params(by_phone)["api_id"] == 777)
+    config.MTPROTO_API_ID, config.MTPROTO_API_HASH = 0, ""
+
+    # Перезапись записи не должна терять ключи: verify() пересохраняет
+    # аккаунт целиком, и без передачи api он бы сломался после проверки.
+    await db.save_account(
+        USER, "+79990000200", saved.session, tg_id=9,
+        name="Из tdata", username=None, api=saved.api, source=saved.source,
+    )
+    again = await db.account(USER, account_id)
+    check("пересохранение не теряет ключи", again.api == desktop, str(again.api))
+
+    await db.delete_account(USER, account_id)
+    await db.delete_account(USER, phone_id)
+
+
 def check_texts() -> None:
     print("\nТексты и кнопки")
     trial = db.Subscription(kind="trial", until=int(time.time()) + 5 * 86400)
@@ -739,6 +892,8 @@ async def run() -> None:
         await check_broadcast_errors()
         await check_broadcast_limits()
         await check_folders()
+        await check_tdata()
+        await check_account_api()
         await check_api()
         check_texts()
         check_wiring()
