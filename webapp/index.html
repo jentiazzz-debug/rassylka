@@ -162,22 +162,23 @@
       </div>
     </div>
 
-    <div class="card coins">
+    <!-- Баланс и состояние подписки — одна панель: это про одно и то же,
+         и разносить их по двум карточкам незачем. -->
+    <div class="panel balance">
       <div class="coins-row">
         <svg class="ic" viewBox="0 0 24 24"><use href="#i-coin"/></svg>
         <span class="coins-value" id="coins-value">0</span>
       </div>
       <div class="hint" id="coins-label">монет</div>
-    </div>
-
-    <div id="sub-card" class="card sub">
-      <div class="sub-title" id="sub-title">—</div>
-      <div class="sub-note hint" id="sub-note"></div>
+      <div id="sub-card" class="sub-strip">
+        <div class="sub-title" id="sub-title">—</div>
+        <div class="sub-note" id="sub-note"></div>
+      </div>
     </div>
 
     <h2 class="section-title">Подписка за монеты</h2>
-    <div id="plans"></div>
-    <p class="hint small">
+    <div class="panel" id="plans"></div>
+    <p class="hint small pad">
       Подписка снимает подпись о боте в конце сообщений и продлевает
       доступ к рассылкам.
     </p>
@@ -186,25 +187,30 @@
       <h2 class="section-title">Пополнить монеты</h2>
       <span class="section-aside" id="packs-aside"></span>
     </div>
-    <div class="grid" id="packs"></div>
-    <button id="pack-custom" class="btn ghost">Своё количество</button>
-    <div class="pay-row">
-      <span class="hint">К оплате</span>
-      <span class="pay-total" id="pay-total"></span>
+    <div class="panel">
+      <div class="grid" id="packs"></div>
+      <button id="pack-custom" class="row row-sep">
+        <span class="row-body"><span class="row-title">Своё количество</span></span>
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg>
+      </button>
+      <div class="row pay-row">
+        <span class="hint">К оплате</span>
+        <span class="pay-total" id="pay-total"></span>
+      </div>
     </div>
     <button id="pay-stars" class="btn stars">Оплатить Stars</button>
-    <p class="hint small">
+    <p class="hint small pad">
       Оплата звёздами Telegram — внутри приложения, без сторонних сайтов.
     </p>
 
     <h2 class="section-title">Приглашайте друзей</h2>
-    <div class="card" id="referral"></div>
+    <div class="panel" id="referral"></div>
 
     <h2 class="section-title">Сводка</h2>
-    <div class="card" id="me-stats"></div>
+    <div class="panel" id="me-stats"></div>
 
     <h2 class="section-title">История монет</h2>
-    <div class="card" id="coin-history"></div>
+    <div class="panel" id="coin-history"></div>
 
     <a id="me-support" class="btn ghost" href="#" hidden>Поддержка</a>
   </div>
@@ -212,8 +218,8 @@
   <!-- Рассылки. -->
   <div id="pane-mail" class="pane" hidden>
     <h2 class="section-title">Рассылки</h2>
-    <div id="campaigns"></div>
-    <p id="campaigns-empty" class="hint" hidden>
+    <div class="panel" id="campaigns"></div>
+    <p id="campaigns-empty" class="hint pad" hidden>
       Рассылок пока нет. Выберите чаты или папку, задайте сообщение и
       интервал — бот будет писать по кругу: чат за чатом.
     </p>
@@ -224,9 +230,9 @@
   <!-- Аккаунты. -->
   <div id="pane-accounts" class="pane" hidden>
     <h2 class="section-title">Аккаунты для рассылки</h2>
-    <div id="accounts"></div>
+    <div class="panel" id="accounts"></div>
 
-    <p id="accounts-empty" class="hint" hidden>
+    <p id="accounts-empty" class="hint pad" hidden>
       Аккаунтов пока нет. Подключите свой — рассылка пойдёт от его имени:
       в личные сообщения, в группы и в чаты, где он уже есть.
     </p>
@@ -235,7 +241,7 @@
     <button id="add-tdata" class="btn ghost">Загрузить tdata</button>
     <p id="limit-note" class="hint center" hidden></p>
 
-    <p class="hint small">
+    <p class="hint small pad">
       Подключённая сессия видна в Telegram → Настройки → Устройства —
       отозвать её можно там в любой момент.
     </p>
@@ -363,7 +369,7 @@
   <!-- Журнал отправок одной рассылки. -->
   <section id="screen-log" class="screen" hidden>
     <h2 class="section-title" id="log-title">Журнал</h2>
-    <div id="log-list"></div>
+    <div class="panel" id="log-list"></div>
     <p id="log-empty" class="hint" hidden>Пока ничего не отправлено.</p>
     <button class="btn ghost" data-home>Назад</button>
   </section>

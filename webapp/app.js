@@ -222,7 +222,7 @@ function accountRow(account) {
 
   const check = document.createElement('button');
   check.className = 'btn small';
-  check.append(icon('refresh'), 'Проверить');
+  check.textContent = 'Проверить';
   check.onclick = async () => {
     const done = busy(check, 'Проверяем…');
     const result = await api('/api/account/verify', { id: account.id });
@@ -238,7 +238,7 @@ function accountRow(account) {
 
   const forget = document.createElement('button');
   forget.className = 'btn small danger';
-  forget.append(icon('trash'), 'Отключить');
+  forget.textContent = 'Отключить';
   forget.onclick = () => {
     confirmBox(
       `Отключить ${account.name || account.phone}? Сессия будет отозвана ` +
@@ -368,10 +368,7 @@ function campaignCard(campaign) {
 
   const toggle = document.createElement('button');
   toggle.className = 'btn small';
-  toggle.append(
-    icon(campaign.status === 'running' ? 'pause' : 'play'),
-    campaign.status === 'running' ? 'Пауза' : 'Продолжить',
-  );
+  toggle.textContent = campaign.status === 'running' ? 'Пауза' : 'Продолжить';
   toggle.onclick = async () => {
     const done = busy(toggle, '…');
     const result = await api('/api/campaign/toggle', { id: campaign.id });
@@ -387,19 +384,19 @@ function campaignCard(campaign) {
 
   const change = document.createElement('button');
   change.className = 'btn small';
-  change.append(icon('pencil'), 'Изменить');
+  change.textContent = 'Изменить';
   change.onclick = () => openEdit(campaign);
   actions.appendChild(change);
 
   const journal = document.createElement('button');
   journal.className = 'btn small';
-  journal.append(icon('list'), 'Журнал');
+  journal.textContent = 'Журнал';
   journal.onclick = () => openLog(campaign);
   actions.appendChild(journal);
 
   const remove = document.createElement('button');
   remove.className = 'btn small danger';
-  remove.append(icon('trash'), 'Удалить');
+  remove.textContent = 'Удалить';
   remove.onclick = () => {
     confirmBox(`Удалить рассылку «${campaign.title}»?`, async (yes) => {
       if (!yes) return;
@@ -503,7 +500,7 @@ function fillStats(box, rows, clear = true) {
   if (clear) box.textContent = '';
   for (const [label, value] of rows) {
     const row = document.createElement('div');
-    row.className = 'stat-row';
+    row.className = 'row stat';
     const left = document.createElement('span');
     left.textContent = label;
     const right = document.createElement('span');
@@ -518,11 +515,14 @@ function renderReferral() {
   const ref = me.referral;
   box.textContent = '';
 
-  const about = document.createElement('p');
-  about.className = 'hint';
-  about.textContent =
+  const about = document.createElement('div');
+  about.className = 'row';
+  const aboutText = document.createElement('span');
+  aboutText.className = 'hint';
+  aboutText.textContent =
     `За каждого, кто придёт по вашей ссылке — ${ref.coins} ${me.coin_name}. ` +
     `Дальше ${ref.percent}% с каждого его пополнения.`;
+  about.appendChild(aboutText);
   box.appendChild(about);
 
   fillStats(box, [
@@ -538,9 +538,15 @@ function renderReferral() {
   box.appendChild(link);
 
   const share = document.createElement('button');
-  share.className = 'btn ghost';
-  share.style.marginTop = '10px';
-  share.append(icon('users'), 'Позвать друзей');
+  share.className = 'row row-sep';
+  share.append(icon('users', 'lead'));
+  const shareBody = document.createElement('span');
+  shareBody.className = 'row-body';
+  const shareTitle = document.createElement('span');
+  shareTitle.className = 'row-title';
+  shareTitle.textContent = 'Позвать друзей';
+  shareBody.appendChild(shareTitle);
+  share.append(shareBody, icon('chevron'));
   share.onclick = () => {
     const text = 'Рассылки в Telegram со своего аккаунта — попробуй';
     const url = 'https://t.me/share/url?url=' + encodeURIComponent(ref.link)
@@ -560,18 +566,18 @@ function renderPlans() {
 
   for (const plan of me.plans) {
     const button = document.createElement('button');
-    button.className = 'plan';
-    button.appendChild(icon('clock'));
+    button.className = 'row';
+    button.appendChild(icon('clock', 'lead'));
 
     const body = document.createElement('div');
-    body.className = 'plan-body';
+    body.className = 'row-body';
     const name = document.createElement('div');
-    name.className = 'plan-name';
+    name.className = 'row-title';
     name.textContent = plan.days >= 30
       ? 'Месяц'
       : `${plan.days} ${plural(plan.days, 'день', 'дня', 'дней')}`;
     const day = document.createElement('div');
-    day.className = 'plan-day';
+    day.className = 'row-note';
     // Не хватает монет — говорим об этом на самой кнопке, а не после
     // нажатия: отказ по нажатию читается как поломка.
     day.textContent = balance < plan.coins
@@ -583,7 +589,7 @@ function renderPlans() {
     button.appendChild(body);
 
     const price = document.createElement('span');
-    price.className = 'plan-price';
+    price.className = 'row-value';
     price.append(String(plan.coins), icon('coin', 'ic-s'));
     button.appendChild(price);
 
@@ -618,15 +624,15 @@ function renderPacks() {
 
     if (pack.popular) {
       const tag = document.createElement('span');
-      tag.className = 'tag';
-      tag.textContent = 'популярно';
+      tag.className = 'tag hot';
+      tag.textContent = 'хит';
       button.appendChild(tag);
     }
     const off = pack.base > pack.stars
       ? Math.round((1 - pack.stars / pack.base) * 100) : 0;
     if (off) {
       const save = document.createElement('span');
-      save.className = 'tag save';
+      save.className = 'tag';
       save.textContent = '−' + off + '%';
       button.appendChild(save);
     }
