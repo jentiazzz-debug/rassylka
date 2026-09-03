@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Рассылка</title>
+<!-- SDK Telegram обязателен и обязан идти с telegram.org: он отдаёт
+     initData (по ней сервер узнаёт, кто открыл приложение), тему клиента
+     и кнопку «назад». Своей копией его не заменить. -->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<main id="app">
+
+  <!-- Пока идёт первый запрос состояния. -->
+  <section id="screen-loading" class="screen">
+    <div class="spinner" aria-hidden="true"></div>
+    <p class="hint center">Загружаем…</p>
+  </section>
+
+  <!-- Главный экран: подписка и подключённые аккаунты. -->
+  <section id="screen-main" class="screen" hidden>
+    <div id="sub-card" class="card sub">
+      <div class="sub-title" id="sub-title">—</div>
+      <div class="sub-note hint" id="sub-note"></div>
+    </div>
+
+    <h2 class="section-title">Аккаунты для рассылки</h2>
+    <div id="accounts"></div>
+
+    <p id="accounts-empty" class="hint" hidden>
+      Аккаунтов пока нет. Подключите свой — рассылка пойдёт от его имени:
+      в личные сообщения, в группы и в чаты, где он уже есть.
+    </p>
+
+    <button id="add-account" class="btn primary">Подключить аккаунт</button>
+    <p id="limit-note" class="hint center" hidden></p>
+
+    <p class="hint small">
+      Подключённая сессия видна в Telegram → Настройки → Устройства —
+      отозвать её можно там в любой момент.
+    </p>
+  </section>
+
+  <!-- Шаг 1: номер. -->
+  <section id="screen-phone" class="screen" hidden>
+    <h2 class="section-title">Номер аккаунта</h2>
+    <p class="hint">
+      Номер того аккаунта, от чьего имени пойдёт рассылка. Telegram
+      пришлёт на него код подтверждения.
+    </p>
+    <input id="phone" class="field" type="tel" inputmode="tel"
+           autocomplete="tel" placeholder="+7 999 123-45-67">
+    <p class="err" id="phone-err" hidden></p>
+    <button id="phone-next" class="btn primary">Получить код</button>
+    <button class="btn ghost" data-back>Отмена</button>
+  </section>
+
+  <!-- Шаг 2: код. -->
+  <section id="screen-code" class="screen" hidden>
+    <h2 class="section-title">Код подтверждения</h2>
+    <p class="hint">
+      Код отправлен на <b id="code-phone"></b>. Он приходит
+      <b>в Telegram, в чат «Telegram»</b> — на этот же аккаунт, а не
+      по SMS.
+    </p>
+    <input id="code" class="field code" type="text" inputmode="numeric"
+           autocomplete="one-time-code" maxlength="6" placeholder="12345">
+    <p class="err" id="code-err" hidden></p>
+    <button id="code-next" class="btn primary">Войти</button>
+    <button class="btn ghost" data-back>Отмена</button>
+  </section>
+
+  <!-- Шаг 3: облачный пароль, если он стоит на аккаунте. -->
+  <section id="screen-password" class="screen" hidden>
+    <h2 class="section-title">Облачный пароль</h2>
+    <p class="hint">
+      На аккаунте включена двухфакторная защита. Введите облачный пароль
+      Telegram — тот, который вы задавали в настройках безопасности.
+    </p>
+    <input id="password" class="field" type="password"
+           autocomplete="current-password" placeholder="Пароль">
+    <p class="err" id="password-err" hidden></p>
+    <button id="password-next" class="btn primary">Войти</button>
+    <button class="btn ghost" data-back>Отмена</button>
+    <p class="hint small">
+      Пароль уходит только в Telegram — мы его не сохраняем.
+    </p>
+  </section>
+
+  <!-- Готово. -->
+  <section id="screen-done" class="screen" hidden>
+    <div class="done-mark" aria-hidden="true">✓</div>
+    <h2 class="section-title center">Аккаунт подключён</h2>
+    <p class="hint center" id="done-who"></p>
+    <button id="done-back" class="btn primary">Готово</button>
+  </section>
+
+  <!-- Открыли не из Telegram — работать не с чем. -->
+  <section id="screen-outside" class="screen" hidden>
+    <h2 class="section-title center">Откройте из бота</h2>
+    <p class="hint center">
+      Это приложение работает внутри Telegram: оно узнаёт вас по данным,
+      которые передаёт клиент. Вернитесь в бота и нажмите
+      «Открыть приложение».
+    </p>
+  </section>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

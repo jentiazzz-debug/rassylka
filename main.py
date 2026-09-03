@@ -1,0 +1,116 @@
+"""Точка входа: база, веб-сервер мини-аппа, уборка входов, поллинг.
+
+Бот и веб-сервер поднимаются в одном процессе. Это не экономия ради
+экономии: незавершённый вход по номеру — это живое подключение Telethon
+в памяти (phone_code_hash привязан к нему), и разнести API мини-аппа с
+этим подключением по разным процессам нельзя — код из Telegram перестал
+бы приниматься.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from aiogram import Bot, Dispatcher
+from aiogram import __version__ as aiogram_version
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.types import BotCommand, BotCommandScopeChat
+
+import accounts
+import config
+import crypto
+import db
+import handlers
+import keyboards
+import webapp
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("rassylka")
+
+COMMANDS = (
+    ("start", "Главное меню"),
+    ("help", "Как это работает"),
+    ("support", "Поддержка"),
+)
+
+ADMIN_COMMANDS = (("stats", "Сводка"),)
+
+
+async def run() -> None:
+    config.check()
+    await db.connect()
+
+    # Шифрование проверяем на старте, а не при первом входе по номеру.
+    # Сломанный ключ иначе всплыл бы у человека посреди подключения —
+    # после того, как Telegram уже прислал ему код.
+    if not crypto.ready():
+        raise SystemExit(
+            "Шифрование сессий не работает: без него подключать аккаунты "
+            "нельзя. Проверьте, что установлена cryptography "
+            "(pip install -r requirements.txt) и что SESSION_KEY — "
+            "корректный ключ Fernet."
+        )
+
+    bot = Bot(
+        token=config.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+    dispatcher = Dispatcher()
+    dispatcher.include_router(handlers.router)
+
+    me = await bot.me()
+    log.info("запущен как @%s, aiogram %s", me.username, aiogram_version)
+
+    await bot.set_my_commands(
+        [BotCommand(command=c, description=d) for c, d in COMMANDS]
+    )
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await bot.set_my_commands(
+                [
+                    BotCommand(command=c, description=d)
+                    for c, d in COMMANDS + ADMIN_COMMANDS
+                ],
+                scope=BotCommandScopeChat(chat_id=admin_id),
+            )
+        except Exception as error:  # админ мог не нажать /start
+            log.warning("не смог выставить команды для %s: %s", admin_id, error)
+
+    try:
+        await bot.set_chat_menu_button(menu_button=keyboards.menu_button())
+    except Exception as error:
+        log.warning("кнопку меню выставить не удалось: %s", error)
+
+    # Копившиеся за простой апдейты выбрасываем: отвечать меню на
+    # вчерашние сообщения смысла нет.
+    await bot.delete_webhook(drop_pending_updates=True)
+
+    runner = await webapp.serve()
+    sweeper = asyncio.create_task(accounts.sweeper(), name="logins-sweeper")
+    try:
+        await dispatcher.start_polling(bot)
+    finally:
+        sweeper.cancel()
+        try:
+            await sweeper
+        except asyncio.CancelledError:
+            pass
+        # Незавершённые входы держат подключения к Telegram: закрываем их
+        # руками, иначе процесс не завершается до таймаута.
+        await accounts.close_all()
+        await runner.cleanup()
+        await db.close()
+        await bot.session.close()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run())
+    except (KeyboardInterrupt, SystemExit) as stop:
+        log.info("остановлен: %s", stop or "Ctrl+C")

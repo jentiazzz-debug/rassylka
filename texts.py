@@ -1,0 +1,103 @@
+"""Тексты бота. Всё в одном месте, чтобы править их без правки логики."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from html import escape
+
+import config
+import db
+
+
+def plural(number: int, one: str, few: str, many: str) -> str:
+    """Русское склонение по числу: 1 день, 2 дня, 5 дней."""
+    tail = abs(number) % 100
+    if 11 <= tail <= 14:
+        return many
+    tail %= 10
+    if tail == 1:
+        return one
+    if 2 <= tail <= 4:
+        return few
+    return many
+
+
+def when(stamp: int, offset_hours: int = 3) -> str:
+    """Дата по часовому поясу владельца, а не по UTC сервера."""
+    if not stamp:
+        return "—"
+    moment = datetime.fromtimestamp(stamp, timezone(timedelta(hours=offset_hours)))
+    return moment.strftime("%d.%m.%Y %H:%M")
+
+
+def subscription_line(subscription: db.Subscription) -> str:
+    """Одна строка про подписку — та же, что человек видит в приложении."""
+    days = subscription.days_left
+    if subscription.kind == "paid":
+        return (
+            f"💎 Подписка активна, осталось {days} "
+            f"{plural(days, 'день', 'дня', 'дней')}"
+        )
+    if subscription.kind == "trial":
+        return (
+            f"🎁 Пробный период: осталось {days} "
+            f"{plural(days, 'день', 'дня', 'дней')}"
+        )
+    return "⌛️ Бесплатный период закончился"
+
+
+def start(name: str | None, subscription: db.Subscription) -> str:
+    hello = escape((name or "").strip()) or "Привет"
+    trial = config.TRIAL_DAYS
+    return (
+        f"👋 <b>{hello}, это бот для рассылок.</b>\n\n"
+        "Подключаете свой аккаунт по номеру телефона — и рассылаете от "
+        "своего имени: в личные сообщения, в группы и в чаты, где этот "
+        "аккаунт уже есть.\n\n"
+        f"{subscription_line(subscription)}\n\n"
+        f"Первые {trial} {plural(trial, 'день', 'дня', 'дней')} — "
+        "бесплатно. На бесплатном тарифе в конце каждого сообщения "
+        "рассылки дописывается строка о том, каким ботом она сделана.\n\n"
+        "Всё управление — в приложении: нажмите кнопку ниже."
+    )
+
+
+#: Что видит человек, если приложение ещё не настроено. Обычному
+#: пользователю это ни о чём не говорит, поэтому текст — про поддержку, а
+#: подробности уходят в лог владельцу.
+NO_WEBAPP = (
+    "⚙️ Приложение пока недоступно — идут работы.\n\n"
+    "Загляните чуть позже или напишите в поддержку."
+)
+
+HELP = (
+    "<b>Как это работает</b>\n\n"
+    "1. Открываете приложение и подключаете свой аккаунт по номеру "
+    "телефона. Telegram пришлёт код в чат «Telegram» — введите его в "
+    "приложении. Если на аккаунте стоит облачный пароль, спросим и его.\n"
+    "2. Аккаунт остаётся подключённым: увидеть и отозвать эту сессию "
+    "можно в Telegram → Настройки → Устройства.\n"
+    "3. Рассылка идёт от лица этого аккаунта.\n\n"
+    "<b>О лимитах.</b> Telegram считает частые сообщения незнакомым "
+    "людям спамом и выдаёт за это ограничения самому аккаунту. Поэтому "
+    "рассылка идёт с паузами и дневным лимитом, а свежий аккаунт лучше "
+    "разгонять постепенно. Рассылайте тем, кто ждёт от вас сообщений: "
+    "жалобы получателей — главная причина блокировок.\n\n"
+    "Вопросы — в поддержку."
+)
+
+SUPPORT_MISSING = (
+    "Поддержка пока не настроена. Напишите владельцу бота напрямую."
+)
+
+
+def stats(numbers: dict[str, int]) -> str:
+    return (
+        "📊 <b>Сводка</b>\n\n"
+        f"Людей всего: <b>{numbers.get('users', 0)}</b>\n"
+        f"Заходили за сутки: <b>{numbers.get('active_day', 0)}</b>\n"
+        f"На пробном: <b>{numbers.get('on_trial', 0)}</b>\n"
+        f"С оплатой: <b>{numbers.get('paid', 0)}</b>\n\n"
+        f"Аккаунтов подключено: <b>{numbers.get('accounts', 0)}</b>, "
+        f"из них живых: <b>{numbers.get('accounts_ok', 0)}</b>"
+    )

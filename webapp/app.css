@@ -1,0 +1,158 @@
+/* Оформление мини-аппа.
+ *
+ * Цвета берутся из темы клиента: Telegram подставляет переменные
+ * --tg-theme-* при открытии, и приложение само собой оказывается в
+ * светлой или тёмной теме — той же, что у человека в клиенте. Свои
+ * цвета прописаны только вторым значением var(): без них страница,
+ * открытая в обычном браузере (например, при отладке), была бы чёрным
+ * текстом на прозрачном фоне.
+ */
+
+:root {
+  --bg: var(--tg-theme-bg-color, #ffffff);
+  --text: var(--tg-theme-text-color, #000000);
+  --hint: var(--tg-theme-hint-color, #707579);
+  --link: var(--tg-theme-link-color, #2481cc);
+  --button: var(--tg-theme-button-color, #2481cc);
+  --button-text: var(--tg-theme-button-text-color, #ffffff);
+  --card: var(--tg-theme-secondary-bg-color, #f4f4f5);
+  --danger: #e53935;
+  --ok: #2fa84f;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", sans-serif;
+  /* Клавиатура на телефоне съедает низ экрана: без запаса последняя
+     кнопка оказывается под ней и до неё нельзя дотянуться. */
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+#app { padding: 16px 16px 32px; max-width: 520px; margin: 0 auto; }
+
+.screen { display: flex; flex-direction: column; gap: 12px; }
+[hidden] { display: none !important; }
+
+.section-title { font-size: 16px; font-weight: 600; margin: 4px 0 0; }
+.center { text-align: center; }
+.small { font-size: 12px; }
+
+.hint { color: var(--hint); margin: 0; font-size: 13px; }
+.err { color: var(--danger); margin: 0; font-size: 13px; }
+
+/* --- карточка подписки --- */
+
+.card {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.sub-title { font-size: 16px; font-weight: 600; }
+.sub-note { margin-top: 4px; }
+.card.expired .sub-title { color: var(--danger); }
+
+/* --- аккаунты --- */
+
+.account {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-top { display: flex; align-items: baseline; gap: 8px; }
+.account-name { font-weight: 600; }
+.account-phone { color: var(--hint); font-size: 13px; margin-left: auto; }
+
+.badge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(47, 168, 79, .15);
+  color: var(--ok);
+  white-space: nowrap;
+}
+.badge.dead { background: rgba(229, 57, 53, .15); color: var(--danger); }
+
+.account-actions { display: flex; gap: 8px; }
+
+/* --- кнопки и поля --- */
+
+.btn {
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius);
+  padding: 13px 16px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  width: 100%;
+}
+
+.btn.primary { background: var(--button); color: var(--button-text); }
+.btn.ghost { background: transparent; color: var(--link); font-weight: 500; }
+.btn.small {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  background: transparent;
+  color: var(--link);
+  border: 1px solid var(--hint);
+  border-radius: 8px;
+}
+.btn.small.danger { color: var(--danger); border-color: rgba(229, 57, 53, .4); }
+.btn:disabled { opacity: .5; cursor: default; }
+
+.field {
+  width: 100%;
+  padding: 13px 14px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+}
+.field:focus { outline: none; border-color: var(--button); }
+.field.code { letter-spacing: .35em; text-align: center; font-size: 20px; }
+
+/* --- мелочи --- */
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  margin: 40px auto 0;
+  border: 3px solid var(--card);
+  border-top-color: var(--button);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Крутящийся спиннер у тех, кто выключил анимации в системе, — лишний
+   раздражитель, а не индикатор. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 3s; }
+}
+
+.done-mark {
+  width: 56px;
+  height: 56px;
+  margin: 24px auto 0;
+  border-radius: 50%;
+  background: rgba(47, 168, 79, .15);
+  color: var(--ok);
+  font-size: 30px;
+  line-height: 56px;
+  text-align: center;
+}
