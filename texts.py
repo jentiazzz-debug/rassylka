@@ -94,6 +94,53 @@ SUPPORT_MISSING = (
 # --- оплата -----------------------------------------------------------
 
 
+def pack_title(coins: int) -> str:
+    return f"{coins} {config.COIN_NAME}"
+
+
+def pack_description(coins: int) -> str:
+    return (
+        f"{coins} монет на счёт. Ими оплачивается подписка на рассылки; "
+        "монеты не сгорают."
+    )
+
+
+def payment_done(coins: int, stars: int, balance: int) -> str:
+    return (
+        "✅ <b>Оплата прошла</b>\n\n"
+        f"Начислено {coins} {escape(config.COIN_NAME)} за {stars} ⭐️.\n"
+        f"Баланс: {coins_line(balance)}.\n\n"
+        "Подписка покупается за монеты — в приложении, раздел «Профиль»."
+    )
+
+
+def subscribed(days: int, price: int, until: int, balance: int) -> str:
+    return (
+        "✅ <b>Подписка активна</b>\n\n"
+        f"Продлили на {days} {plural(days, 'день', 'дня', 'дней')}, "
+        f"до {when(until)}.\n"
+        f"Списано {price} {escape(config.COIN_NAME)}, осталось {balance}.\n\n"
+        "Подпись о боте в сообщениях рассылки больше не добавляется."
+    )
+
+
+def referral_share(share: int, balance: int) -> str:
+    return (
+        f"💎 <b>+{share} {escape(config.COIN_NAME)}</b>\n\n"
+        "Приглашённый вами человек пополнил баланс — вам капнула доля.\n"
+        f"Ваш баланс: {coins_line(balance)}."
+    )
+
+
+def referral_joined(coins: int, balance: int) -> str:
+    return (
+        "👋 <b>По вашей ссылке пришёл человек</b>\n\n"
+        f"Начислено {coins} {escape(config.COIN_NAME)}. "
+        f"Баланс: {coins_line(balance)}.\n\n"
+        "Дальше вам будет капать доля с его пополнений."
+    )
+
+
 def plan_title(days: int) -> str:
     if days == 1:
         return "Подписка на день"
@@ -110,13 +157,15 @@ def plan_description(days: int) -> str:
     )
 
 
-def payment_done(days: int, stars: int, until: int, coins: int) -> str:
+def invite(link: str, stats: dict) -> str:
     return (
-        "✅ <b>Оплата прошла</b>\n\n"
-        f"Подписка продлена на {days} {plural(days, 'день', 'дня', 'дней')}, "
-        f"до {when(until)}.\n"
-        f"Списано {stars} ⭐️. Ваш баланс: {coins_line(coins)}.\n\n"
-        "Подпись о боте в сообщениях рассылки больше не добавляется."
+        "🤝 <b>Приглашайте — получайте монеты</b>\n\n"
+        f"Ваша ссылка:\n{escape(link)}\n\n"
+        f"За каждого, кто придёт по ней: <b>{config.REF_COINS} "
+        f"{escape(config.COIN_NAME)}</b>. Дальше — "
+        f"<b>{config.REF_PERCENT}%</b> с каждого его пополнения.\n\n"
+        f"Пришло по ссылке: <b>{stats['invited']}</b>, "
+        f"заработано: <b>{stats['earned']} {escape(config.COIN_NAME)}</b>"
     )
 
 

@@ -38,6 +38,7 @@ log = logging.getLogger("rassylka")
 COMMANDS = (
     ("start", "Главное меню"),
     ("help", "Как это работает"),
+    ("invite", "Пригласить друга"),
     ("support", "Поддержка"),
 )
 

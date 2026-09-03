@@ -42,8 +42,12 @@ CREATE TABLE IF NOT EXISTS users (
     trial_ends_at INTEGER NOT NULL DEFAULT 0,
     paid_until    INTEGER NOT NULL DEFAULT 0,
     seen_at       INTEGER NOT NULL DEFAULT 0,
-    -- Внутренняя валюта. Начисляется за оплаты звёздами.
-    coins         INTEGER NOT NULL DEFAULT 0
+    -- Внутренняя валюта: ею платят за подписку. Приходит от покупки за
+    -- звёзды и от приглашённых.
+    coins         INTEGER NOT NULL DEFAULT 0,
+    -- Кто пригласил. Ставится один раз при первом /start и больше не
+    -- меняется: иначе приглашённого можно было бы «переприсвоить».
+    ref_by        INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS accounts (
@@ -165,6 +169,18 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id, created_at);
 
+-- Движения по монетам. Журнал, а не только баланс: человек должен
+-- видеть, откуда монеты взялись и куда делись, а мы — уметь разобрать
+-- спор, не гадая по остатку.
+CREATE TABLE IF NOT EXISTS coin_ops (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    delta      INTEGER NOT NULL,
+    reason     TEXT    NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_coin_ops_user ON coin_ops(user_id, created_at);
+
 -- Материалы: сообщения из «Избранного» подключённого аккаунта. Само
 -- сообщение здесь не хранится — только id и то, что нужно показать в
 -- списке. Отправляется оно копированием прямо из «Избранного», и
@@ -238,6 +254,9 @@ async def _migrate() -> None:
     )
     await _ensure_column(
         "campaigns", "saved_id", "ALTER TABLE campaigns ADD COLUMN saved_id INTEGER"
+    )
+    await _ensure_column(
+        "users", "ref_by", "ALTER TABLE users ADD COLUMN ref_by INTEGER"
     )
 
 
@@ -375,13 +394,107 @@ async def profile(user_id: int) -> dict:
     return {key: int(row[key] or 0) for key in row.keys()} if row else {}
 
 
-async def add_coins(user_id: int, coins: int) -> int:
+async def add_coins(user_id: int, coins: int, reason: str = "начисление") -> int:
+    """Начислить монеты и записать это в журнал. Возвращает новый баланс."""
     await _conn().execute(
         "UPDATE users SET coins = coins + ? WHERE user_id = ?", (coins, user_id)
+    )
+    await _conn().execute(
+        "INSERT INTO coin_ops (user_id, delta, reason, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, coins, reason, int(time.time())),
     )
     await _conn().commit()
     row = await _fetchone("SELECT coins FROM users WHERE user_id = ?", (user_id,))
     return int(row["coins"]) if row else 0
+
+
+async def spend_coins(user_id: int, coins: int, reason: str) -> bool:
+    """Списать монеты. False — не хватило.
+
+    Проверка и списание одним запросом, с условием на остаток. Не
+    «прочитали, потом записали»: два одновременных запроса на покупку
+    иначе оба увидели бы полный баланс и оба прошли — подписка за
+    полцены.
+    """
+    cursor = await _conn().execute(
+        "UPDATE users SET coins = coins - ? WHERE user_id = ? AND coins >= ?",
+        (coins, user_id, coins),
+    )
+    if not cursor.rowcount:
+        await _conn().rollback()
+        return False
+    await _conn().execute(
+        "INSERT INTO coin_ops (user_id, delta, reason, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, -coins, reason, int(time.time())),
+    )
+    await _conn().commit()
+    return True
+
+
+async def coins_of(user_id: int) -> int:
+    row = await _fetchone("SELECT coins FROM users WHERE user_id = ?", (user_id,))
+    return int(row["coins"] or 0) if row else 0
+
+
+async def coin_history(user_id: int, limit: int = 20) -> list[dict]:
+    rows = await _fetchall(
+        "SELECT delta, reason, created_at FROM coin_ops WHERE user_id = ? "
+        "ORDER BY created_at DESC, id DESC LIMIT ?",
+        (user_id, limit),
+    )
+    return [
+        {"delta": row["delta"], "reason": row["reason"],
+         "created_at": row["created_at"]}
+        for row in rows
+    ]
+
+
+# --- приглашения ------------------------------------------------------
+
+
+async def set_referrer(user_id: int, ref_by: int) -> bool:
+    """Записать пригласившего. False — не записали.
+
+    Ставится ровно один раз и только тому, кто ещё никем не приглашён:
+    иначе приглашённого можно было бы переприсвоить чужой ссылкой, а
+    себя — пригласить самому.
+    """
+    if ref_by == user_id:
+        return False
+    exists = await _fetchone(
+        "SELECT 1 FROM users WHERE user_id = ?", (ref_by,)
+    )
+    if exists is None:
+        return False
+    cursor = await _conn().execute(
+        "UPDATE users SET ref_by = ? WHERE user_id = ? AND ref_by IS NULL",
+        (ref_by, user_id),
+    )
+    await _conn().commit()
+    return cursor.rowcount > 0
+
+
+async def referrer_of(user_id: int) -> int | None:
+    row = await _fetchone(
+        "SELECT ref_by FROM users WHERE user_id = ?", (user_id,)
+    )
+    return int(row["ref_by"]) if row and row["ref_by"] else None
+
+
+async def referral_stats(user_id: int) -> dict:
+    row = await _fetchone(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM users WHERE ref_by = ?) AS invited,
+            (SELECT COALESCE(SUM(delta), 0) FROM coin_ops
+                 WHERE user_id = ? AND delta > 0
+                   AND reason LIKE 'приглашённый%') AS earned
+        """,
+        (user_id, user_id),
+    )
+    return {"invited": int(row["invited"] or 0), "earned": int(row["earned"] or 0)}
 
 
 async def record_payment(

@@ -32,8 +32,10 @@ import broadcast
 import chats
 import config
 import db
+import handlers
 import payments
 import tdata
+import texts
 
 log = logging.getLogger("rassylka.webapp")
 
@@ -341,8 +343,14 @@ async def api_account_forget(
 
 @authed
 async def api_profile(request: web.Request, user: dict, data: dict) -> web.Response:
-    """Профиль: кто это, монеты, сводка, тарифы."""
+    """Профиль: кто это, монеты, приглашения, тарифы, пачки монет."""
     user_id = int(user["id"])
+    invite = ""
+    if _bot is not None:
+        try:
+            invite = await handlers.invite_link(_bot, user_id)
+        except Exception as error:
+            log.debug("ссылку приглашения не собрать: %s", error)
     return web.json_response(
         {
             "ok": True,
@@ -357,30 +365,71 @@ async def api_profile(request: web.Request, user: dict, data: dict) -> web.Respo
             "is_premium": bool(user.get("is_premium")),
             "coin_name": config.COIN_NAME,
             "stats": await db.profile(user_id),
-            "plans": config.PLANS,
+            "plans": [
+                {"days": plan["days"], "coins": plan["stars"]}
+                for plan in config.PLANS
+            ],
+            "packs": [
+                {"coins": coins, "stars": payments.pack_price(coins)}
+                for coins in config.COIN_PACKS
+            ],
+            "history": await db.coin_history(user_id, 10),
+            "referral": {
+                **await db.referral_stats(user_id),
+                "link": invite,
+                "coins": config.REF_COINS,
+                "percent": config.REF_PERCENT,
+            },
         }
     )
 
 
 @authed
 async def api_invoice(request: web.Request, user: dict, data: dict) -> web.Response:
-    """Ссылка на счёт: её мини-апп открывает через tg.openInvoice.
+    """Счёт на пачку монет: его мини-апп открывает через tg.openInvoice.
 
-    Подписку здесь никто не продлевает. Ответ openInvoice приходит из
+    Монеты здесь никто не начисляет. Ответ openInvoice приходит из
     браузера, и верить ему нельзя — настоящее подтверждение приезжает
     боту отдельным апдейтом от Telegram (см. payments.py).
     """
     if _bot is None:
         return _fail("Оплата сейчас недоступна. Напишите в поддержку.")
-    days = _int(data.get("days"))
-    if payments.plan_by_days(days) is None:
-        return _fail("Такого тарифа нет.")
+    coins = _int(data.get("coins"))
+    if coins not in config.COIN_PACKS:
+        return _fail("Такой пачки монет нет.")
     try:
-        link = await payments.invoice_link(_bot, days)
+        link = await payments.invoice_link(_bot, coins)
     except Exception as error:
-        log.exception("счёт на %s дней не создался", days)
+        log.exception("счёт на %s монет не создался", coins)
         return _fail(f"Счёт не создался: {type(error).__name__}")
     return web.json_response({"ok": True, "link": link})
+
+
+@authed
+async def api_subscribe(request: web.Request, user: dict, data: dict) -> web.Response:
+    """Купить подписку за монеты."""
+    user_id = int(user["id"])
+    days = _int(data.get("days"))
+    ok, error = await payments.buy_subscription(user_id, days)
+    if not ok:
+        return _fail(error)
+    subscription = await db.subscription(user_id)
+    balance = await db.coins_of(user_id)
+    # Сообщение в личку, а не только в приложении: человек его закроет, а
+    # подтверждение покупки должно остаться где-то, где его найдут.
+    if _bot is not None:
+        try:
+            await _bot.send_message(
+                user_id,
+                texts.subscribed(
+                    days, payments.plan_price(days), subscription.until, balance
+                ),
+            )
+        except Exception as error:
+            log.debug("подтверждение подписки не ушло: %s", error)
+    return web.json_response(
+        {"ok": True, "coins": balance, "until": subscription.until}
+    )
 
 
 # --- материалы --------------------------------------------------------
@@ -798,6 +847,7 @@ def build() -> web.Application:
             web.post("/api/account/tdata", api_account_tdata),
             web.post("/api/profile", api_profile),
             web.post("/api/invoice", api_invoice),
+            web.post("/api/subscribe", api_subscribe),
             web.post("/api/materials", api_materials),
             web.post("/api/chats", api_chats),
             web.post("/api/chats/scan", api_chats_scan),

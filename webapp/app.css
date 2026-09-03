@@ -1,188 +1,513 @@
-/* Оформление мини-аппа.
+/* Оформление мини-аппа: матовое стекло в бело-серых тонах.
  *
- * Цвета берутся из темы клиента: Telegram подставляет переменные
- * --tg-theme-* при открытии, и приложение само собой оказывается в
- * светлой или тёмной теме — той же, что у человека в клиенте. Свои
- * цвета прописаны только вторым значением var(): без них страница,
- * открытая в обычном браузере (например, при отладке), была бы чёрным
- * текстом на прозрачном фоне.
+ * Тема своя, а не из клиента. Обычно мини-апп подхватывает --tg-theme-*
+ * и живёт в цветах Telegram, но здесь заказан один определённый вид —
+ * светлое стекло, — и он должен быть одинаковым у всех. Поэтому цвета
+ * заданы явно, включая цвет текста и фон body: без явного фона страница
+ * в тёмной теме просвечивала бы чёрным сквозь полупрозрачные карточки.
+ *
+ * Само «стекло» — это три вещи вместе, по отдельности эффекта нет:
+ *   1. полупрозрачная заливка,
+ *   2. backdrop-filter: размывает и подкрашивает то, что под карточкой,
+ *   3. светлая рамка и внутренний блик сверху — они и читаются как
+ *      преломление на кромке.
+ * Фон под всем этим намеренно не плоский: по плоской заливке размывать
+ * нечего, и стекло выглядит просто серым прямоугольником.
  */
 
 :root {
-  --bg: var(--tg-theme-bg-color, #ffffff);
-  --text: var(--tg-theme-text-color, #000000);
-  --hint: var(--tg-theme-hint-color, #707579);
-  --link: var(--tg-theme-link-color, #2481cc);
-  --button: var(--tg-theme-button-color, #2481cc);
-  --button-text: var(--tg-theme-button-text-color, #ffffff);
-  --card: var(--tg-theme-secondary-bg-color, #f4f4f5);
-  --danger: #e53935;
-  --ok: #2fa84f;
-  --radius: 12px;
+  --ink: #14161b;
+  --ink-2: #565c68;
+  --ink-3: #8b919d;
+
+  --glass: rgba(255, 255, 255, .62);
+  --glass-soft: rgba(255, 255, 255, .42);
+  --glass-edge: rgba(255, 255, 255, .78);
+  --line: rgba(20, 22, 28, .07);
+
+  --accent: #14161b;
+  --accent-soft: rgba(20, 22, 28, .06);
+  --danger: #c8372d;
+  --ok: #1f7a4d;
+  --warn: #9a6412;
+
+  --shadow: 0 12px 32px rgba(22, 26, 38, .10), 0 2px 6px rgba(22, 26, 38, .05);
+  --shadow-soft: 0 6px 18px rgba(22, 26, 38, .07);
+  --blur: saturate(180%) blur(22px);
+
+  --radius: 20px;
+  --radius-s: 14px;
 }
 
 * { box-sizing: border-box; }
 
+html { background: #eef0f5; }
+
 body {
   margin: 0;
-  padding: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-        "Helvetica Neue", sans-serif;
-  /* Клавиатура на телефоне съедает низ экрана: без запаса последняя
-     кнопка оказывается под ней и до неё нельзя дотянуться. */
+  color: var(--ink);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+        Roboto, "Helvetica Neue", sans-serif;
+  letter-spacing: -.01em;
+  -webkit-font-smoothing: antialiased;
+
+  /* Пятна света под стеклом. Без них размывать нечего. */
+  background:
+    radial-gradient(760px 420px at 8% -6%, #ffffff 0%, rgba(255,255,255,0) 62%),
+    radial-gradient(620px 420px at 104% 4%, #e3e8f2 0%, rgba(227,232,242,0) 58%),
+    radial-gradient(680px 460px at 46% 106%, #dfe4ee 0%, rgba(223,228,238,0) 60%),
+    linear-gradient(180deg, #f7f8fb 0%, #e9ecf2 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
   padding-bottom: env(safe-area-inset-bottom, 0);
 }
 
-#app { padding: 16px 16px 32px; max-width: 520px; margin: 0 auto; }
+#app { padding: 18px 16px 28px; max-width: 560px; margin: 0 auto; }
 
-.screen { display: flex; flex-direction: column; gap: 12px; }
+.screen { display: flex; flex-direction: column; gap: 14px; }
 [hidden] { display: none !important; }
 
-.section-title { font-size: 16px; font-weight: 600; margin: 4px 0 0; }
+/* --- типографика --- */
+
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 10px 0 -4px;
+}
+
 .center { text-align: center; }
 .small { font-size: 12px; }
+.hint { color: var(--ink-2); margin: 0; font-size: 13px; }
+.err { color: var(--danger); margin: 0; font-size: 13px; font-weight: 500; }
 
-.hint { color: var(--hint); margin: 0; font-size: 13px; }
-.err { color: var(--danger); margin: 0; font-size: 13px; }
+.label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin-top: 4px;
+}
 
-/* --- карточка подписки --- */
+/* --- иконки --- */
+
+.ic {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.ic-s { width: 16px; height: 16px; stroke-width: 1.9; }
+.ic-l { width: 26px; height: 26px; stroke-width: 1.5; }
+
+/* --- стекло --- */
 
 .card {
-  background: var(--card);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-edge);
   border-radius: var(--radius);
-  padding: 14px 16px;
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, .9);
+  padding: 16px 18px;
 }
 
-.sub-title { font-size: 16px; font-weight: 600; }
-.sub-note { margin-top: 4px; }
-.card.expired .sub-title { color: var(--danger); }
+/* Стекло держится на backdrop-filter. Там, где его нет, полупрозрачная
+   заливка превращается в мутное пятно — делаем её плотной. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .card, .account, .campaign, .picker, .field, .btn.ghost, #tabbar, .plan {
+    background: rgba(255, 255, 255, .93);
+  }
+}
 
-/* --- аккаунты --- */
+/* --- профиль --- */
 
-.account {
-  background: var(--card);
+.me { display: flex; align-items: center; gap: 14px; padding: 2px 2px 4px; }
+
+.me-photo {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  flex: none;
+  object-fit: cover;
+  box-shadow: 0 6px 18px rgba(22, 26, 38, .16);
+}
+
+.me-letter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(160deg, #2b2f38, #14161b);
+  color: #fff;
+  font-size: 25px;
+  font-weight: 600;
+}
+
+.me-body { min-width: 0; }
+.me-name {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -.02em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.me-name .ic { width: 15px; height: 15px; color: var(--ink-3); }
+
+.card.coins { text-align: center; padding: 22px 18px 20px; }
+.coins-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+}
+.coins-row .ic { width: 27px; height: 27px; color: var(--ink-2); }
+.coins-value {
+  font-size: 38px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -.035em;
+}
+
+/* --- строка тарифа и пачки монет --- */
+
+.plan {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  margin-bottom: 9px;
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius-s);
+  background: var(--glass-soft);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-soft), inset 0 1px 0 rgba(255, 255, 255, .85);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: transform .14s ease, box-shadow .14s ease;
+}
+.plan:active { transform: scale(.985); box-shadow: var(--shadow-soft); }
+.plan:disabled { opacity: .55; cursor: default; }
+.plan .ic { color: var(--ink-3); }
+
+.plan-body { flex: 1; min-width: 0; }
+.plan-name { font-weight: 600; letter-spacing: -.01em; }
+.plan-day { font-size: 12px; color: var(--ink-3); }
+.plan-price {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.plan-price .ic { width: 15px; height: 15px; color: inherit; }
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 14px;
+}
+.stat-row + .stat-row { border-top: 1px solid var(--line); }
+.stat-row span:first-child { color: var(--ink-2); }
+.stat-row span:last-child { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* --- приглашения --- */
+
+.invite-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 11px 13px;
+  border-radius: var(--radius-s);
+  background: var(--accent-soft);
+  font-size: 12px;
+  color: var(--ink-2);
+  word-break: break-all;
+}
+.invite-link .ic { color: var(--ink-3); }
+
+/* --- аккаунты и рассылки --- */
+
+.account, .campaign {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-edge);
   border-radius: var(--radius);
-  padding: 12px 14px;
+  box-shadow: var(--shadow-soft), inset 0 1px 0 rgba(255, 255, 255, .9);
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 9px;
+  margin-bottom: 10px;
 }
 
-.account-top { display: flex; align-items: baseline; gap: 8px; }
-.account-name { font-weight: 600; }
-.account-phone { color: var(--hint); font-size: 13px; margin-left: auto; }
+.account-top, .campaign-top { display: flex; align-items: center; gap: 8px; }
+.account-name, .campaign-name {
+  font-weight: 600;
+  letter-spacing: -.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-phone { color: var(--ink-3); font-size: 12px; margin-left: auto; }
 
 .badge {
-  font-size: 12px;
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
   border-radius: 999px;
-  background: rgba(47, 168, 79, .15);
+  background: rgba(31, 122, 77, .12);
   color: var(--ok);
   white-space: nowrap;
 }
-.badge.dead { background: rgba(229, 57, 53, .15); color: var(--danger); }
+.badge .ic { width: 12px; height: 12px; stroke-width: 2.2; }
+.badge.dead { background: rgba(200, 55, 45, .12); color: var(--danger); }
+.badge.paused { background: rgba(154, 100, 18, .13); color: var(--warn); }
+.badge.stopped { background: rgba(200, 55, 45, .12); color: var(--danger); }
 
-.account-actions { display: flex; gap: 8px; }
+.campaign-text {
+  color: var(--ink-2);
+  font-size: 13px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.campaign-facts {
+  font-size: 12px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
 
-/* --- кнопки и поля --- */
+.account-actions, .campaign-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+
+/* --- кнопки --- */
 
 .btn {
   appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 14px 18px;
   border: 0;
-  border-radius: var(--radius);
-  padding: 13px 16px;
+  border-radius: var(--radius-s);
   font: inherit;
   font-weight: 600;
+  letter-spacing: -.01em;
   cursor: pointer;
-  width: 100%;
+  text-decoration: none;
+  transition: transform .14s ease, opacity .14s ease;
+}
+.btn:active { transform: scale(.985); }
+.btn:disabled { opacity: .45; cursor: default; transform: none; }
+
+.btn.primary {
+  background: linear-gradient(178deg, #2c313b 0%, #14161b 100%);
+  color: #fff;
+  box-shadow: 0 8px 22px rgba(20, 22, 27, .26),
+              inset 0 1px 0 rgba(255, 255, 255, .16);
 }
 
-.btn.primary { background: var(--button); color: var(--button-text); }
-.btn.ghost { background: transparent; color: var(--link); font-weight: 500; }
+.btn.ghost {
+  background: var(--glass-soft);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-edge);
+  color: var(--ink);
+  box-shadow: var(--shadow-soft);
+}
+
 .btn.small {
-  padding: 8px 12px;
-  font-size: 13px;
-  font-weight: 500;
-  background: transparent;
-  color: var(--link);
-  border: 1px solid var(--hint);
-  border-radius: 8px;
-  /* Ширину задаёт ряд, а не сама кнопка: с width:100% от .btn три
-     кнопки в карточке вставали столбиком и растягивали её на пол-экрана. */
   width: auto;
   flex: 1;
   min-width: 0;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--accent-soft);
+  color: var(--ink);
+  border-radius: 11px;
 }
-.btn.small.danger { color: var(--danger); border-color: rgba(229, 57, 53, .4); }
-.btn:disabled { opacity: .5; cursor: default; }
+.btn.small .ic { width: 15px; height: 15px; }
+.btn.small.danger { color: var(--danger); background: rgba(200, 55, 45, .09); }
+
+/* --- поля --- */
 
 .field {
   width: 100%;
-  padding: 13px 14px;
-  border-radius: var(--radius);
-  border: 1px solid transparent;
-  background: var(--card);
-  color: var(--text);
+  padding: 14px 15px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--glass-edge);
+  background: var(--glass-soft);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  box-shadow: inset 0 1px 2px rgba(22, 26, 38, .04);
+  color: var(--ink);
   font: inherit;
 }
-.field:focus { outline: none; border-color: var(--button); }
-
-/* Поле выбора файла браузер рисует своей кнопкой: наши отступы делают
-   её несоразмерной, а цвет текста надо задать явно — в тёмной теме он
-   иначе остаётся чёрным на тёмном. */
-input[type="file"].field {
-  padding: 10px;
-  font-size: 13px;
-  color: var(--text);
+.field::placeholder { color: var(--ink-3); }
+.field:focus {
+  outline: none;
+  border-color: rgba(20, 22, 28, .32);
+  box-shadow: 0 0 0 3px rgba(20, 22, 28, .07);
 }
+.field.code {
+  letter-spacing: .38em;
+  text-align: center;
+  font-size: 21px;
+  font-weight: 600;
+}
+.area { resize: vertical; min-height: 104px; font-family: inherit; }
+
+input[type="file"].field { padding: 11px; font-size: 13px; color: var(--ink-2); }
 input[type="file"].field::file-selector-button {
-  margin-right: 10px;
-  padding: 7px 12px;
+  margin-right: 11px;
+  padding: 8px 13px;
   border: 0;
-  border-radius: 8px;
-  background: var(--button);
-  color: var(--button-text);
+  border-radius: 10px;
+  background: linear-gradient(178deg, #2c313b, #14161b);
+  color: #fff;
   font: inherit;
   font-weight: 600;
   cursor: pointer;
 }
-.field.code { letter-spacing: .35em; text-align: center; font-size: 20px; }
 
-/* --- мелочи --- */
+/* --- переключатели --- */
 
-.spinner {
-  width: 28px;
-  height: 28px;
-  margin: 40px auto 0;
-  border: 3px solid var(--card);
-  border-top-color: var(--button);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius-s);
+  background: var(--accent-soft);
+}
+.tab, .ctab, .etab {
+  flex: 1;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .16s ease, color .16s ease;
+}
+.tab.active, .ctab.active, .etab.active {
+  background: #fff;
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: var(--shadow-soft);
 }
 
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* Крутящийся спиннер у тех, кто выключил анимации в системе, — лишний
-   раздражитель, а не индикатор. */
-@media (prefers-reduced-motion: reduce) {
-  .spinner { animation-duration: 3s; }
+.chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.chip {
+  padding: 9px 15px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 999px;
+  background: var(--glass-soft);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all .14s ease;
 }
+.chip.active {
+  background: linear-gradient(178deg, #2c313b, #14161b);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 600;
+}
+
+/* --- списки выбора --- */
+
+.picker {
+  max-height: 262px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius);
+  background: var(--glass-soft);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .8);
+}
+
+.pick {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 11px;
+  border-radius: 11px;
+  cursor: pointer;
+}
+.pick:active { background: rgba(20, 22, 28, .05); }
+.pick input { width: 19px; height: 19px; flex: none; accent-color: var(--accent); }
+.pick-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-kind { font-size: 12px; color: var(--ink-3); flex: none; }
+.pick-mark { flex: none; color: var(--ink-3); }
+
+/* --- журнал --- */
+
+.log-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius-s);
+  margin-bottom: 7px;
+  font-size: 13px;
+}
+.log-mark.bad { color: var(--danger); }
+.log-mark.good { color: var(--ok); }
+.log-chat { flex: 1; min-width: 0; overflow: hidden; }
+.log-chat > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-when { color: var(--ink-3); font-size: 12px; flex: none; }
+.log-error { color: var(--danger); font-size: 12px; }
 
 /* --- нижняя панель разделов --- */
 
 #tabbar {
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   display: flex;
-  background: var(--bg);
-  border-top: 1px solid var(--card);
-  /* Домашняя полоса на телефонах без кнопок съедает низ экрана: без
-     этого отступа третья вкладка оказывается под ней. */
-  padding-bottom: env(safe-area-inset-bottom, 0);
+  padding: 6px;
+  gap: 4px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, .72);
+  -webkit-backdrop-filter: saturate(180%) blur(26px);
+  backdrop-filter: saturate(180%) blur(26px);
+  border: 1px solid var(--glass-edge);
+  box-shadow: 0 12px 34px rgba(22, 26, 38, .16),
+              inset 0 1px 0 rgba(255, 255, 255, .9);
+  max-width: 536px;
+  margin: 0 auto;
   z-index: 10;
 }
 
@@ -191,208 +516,49 @@ input[type="file"].field::file-selector-button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 9px 4px;
+  gap: 3px;
+  padding: 8px 4px;
   border: 0;
+  border-radius: 16px;
   background: transparent;
-  color: var(--hint);
+  color: var(--ink-3);
   font: inherit;
   font-size: 11px;
+  font-weight: 500;
   cursor: pointer;
+  transition: background .16s ease, color .16s ease;
 }
-.tab-item.active { color: var(--button); font-weight: 600; }
-.tab-icon { font-size: 19px; line-height: 1; }
+.tab-item.active { color: var(--ink); font-weight: 600; background: rgba(20, 22, 28, .06); }
 
-/* Панель перекрывает низ страницы — оставляем ей место. */
-body.with-tabs #app { padding-bottom: 88px; }
+/* Плавающая панель перекрывает низ страницы — оставляем ей место. */
+body.with-tabs #app { padding-bottom: 104px; }
 
-/* --- профиль --- */
+/* --- мелочи --- */
 
-.me { display: flex; align-items: center; gap: 14px; padding: 4px 0 8px; }
-
-.me-photo {
-  width: 60px;
-  height: 60px;
+.spinner {
+  width: 26px;
+  height: 26px;
+  margin: 46px auto 0;
+  border: 2.5px solid rgba(20, 22, 28, .1);
+  border-top-color: var(--ink);
   border-radius: 50%;
-  flex: none;
-  object-fit: cover;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 3s; }
+  .btn, .plan, .chip { transition: none; }
 }
 
-/* Запасной кружок с буквой: у части людей аватарки нет вовсе, а у
-   закрытых профилей Telegram её не отдаёт. */
-.me-letter {
+.done-mark {
+  width: 62px;
+  height: 62px;
+  margin: 26px auto 4px;
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--button);
-  color: var(--button-text);
-  font-size: 24px;
-  font-weight: 600;
-}
-
-.me-body { min-width: 0; }
-.me-name { font-size: 18px; font-weight: 600; }
-
-.card.coins { text-align: center; padding: 18px 16px; }
-.coins-value { font-size: 30px; font-weight: 700; line-height: 1.1; }
-
-.plan {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 13px 16px;
-  margin-bottom: 8px;
-  border: 0;
-  border-radius: var(--radius);
-  background: var(--card);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-  text-align: left;
-}
-.plan-name { flex: 1; font-weight: 600; }
-.plan-price { font-weight: 600; color: var(--button); white-space: nowrap; }
-.plan-day { font-size: 12px; color: var(--hint); }
-
-.stat-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 5px 0;
-  font-size: 14px;
-}
-.stat-row span:first-child { color: var(--hint); }
-
-/* --- рассылки --- */
-
-.campaign {
-  background: var(--card);
-  border-radius: var(--radius);
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.campaign-top { display: flex; align-items: baseline; gap: 8px; }
-.campaign-name { font-weight: 600; }
-.campaign-text {
-  color: var(--hint);
-  font-size: 13px;
-  /* Текст рассылки бывает длинным, а карточка — список: показываем два
-     ряда, остальное прячем, иначе одна рассылка занимает весь экран. */
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.campaign-facts { font-size: 12px; color: var(--hint); }
-.campaign-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-
-.badge.paused { background: rgba(240, 160, 30, .18); color: #d98014; }
-.badge.stopped { background: rgba(229, 57, 53, .15); color: var(--danger); }
-
-/* --- выбор чатов и папок --- */
-
-.label {
-  display: block;
-  font-size: 13px;
-  font-weight: 600;
-  margin-top: 6px;
-}
-
-.tabs { display: flex; gap: 8px; }
-.tab, .ctab, .etab {
-  flex: 1;
-  padding: 9px 12px;
-  border: 0;
-  border-radius: 10px;
-  background: var(--card);
-  color: var(--hint);
-  font: inherit;
-  font-size: 14px;
-  cursor: pointer;
-}
-.tab.active, .ctab.active, .etab.active {
-  background: var(--button);
-  color: var(--button-text);
-  font-weight: 600;
-}
-
-/* Материал в списке: значок типа, текст в одну строку. */
-.pick-mark { flex: none; font-size: 15px; }
-
-.picker {
-  /* Список диалогов бывает на сотни строк: он прокручивается внутри
-     себя, иначе кнопка «Запустить» уезжает за горизонт. */
-  max-height: 260px;
-  overflow-y: auto;
-  background: var(--card);
-  border-radius: var(--radius);
-  padding: 4px;
-}
-
-.pick {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
-  border-radius: 8px;
-  cursor: pointer;
-}
-.pick:active { background: rgba(127, 127, 127, .12); }
-.pick input { width: 18px; height: 18px; flex: none; accent-color: var(--button); }
-.pick-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pick-kind { font-size: 12px; color: var(--hint); flex: none; }
-
-.area { resize: vertical; min-height: 96px; font-family: inherit; }
-
-.chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.chip {
-  padding: 8px 14px;
-  border: 1px solid var(--hint);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
-}
-.chip.active {
-  background: var(--button);
-  color: var(--button-text);
-  border-color: var(--button);
-  font-weight: 600;
-}
-
-/* --- журнал --- */
-
-.log-row {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 9px 12px;
-  background: var(--card);
-  border-radius: 10px;
-  margin-bottom: 6px;
-  font-size: 13px;
-}
-.log-mark { flex: none; }
-.log-mark.bad { color: var(--danger); }
-.log-mark.good { color: var(--ok); }
-.log-chat { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.log-when { color: var(--hint); font-size: 12px; flex: none; }
-.log-error { color: var(--danger); font-size: 12px; }
-
-.done-mark {
-  width: 56px;
-  height: 56px;
-  margin: 24px auto 0;
-  border-radius: 50%;
-  background: rgba(47, 168, 79, .15);
+  background: rgba(31, 122, 77, .12);
   color: var(--ok);
-  font-size: 30px;
-  line-height: 56px;
-  text-align: center;
 }
+.done-mark .ic { width: 30px; height: 30px; stroke-width: 2.2; }

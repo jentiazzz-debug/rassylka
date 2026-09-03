@@ -321,6 +321,7 @@ async def check_api() -> None:
             "/api/profile",
             "/api/invoice",
             "/api/materials",
+            "/api/subscribe",
             "/api/campaign/edit",
         ):
             answer = await client.post(path, json={"phone": "+79990000000", "id": 1})
@@ -825,35 +826,55 @@ async def check_account_api() -> None:
 
 
 async def check_payments() -> None:
-    print("\nОплата звёздами")
+    print("\nМонеты, подписка и оплата")
     check("тарифы разобрались", len(config.PLANS) == 3, str(config.PLANS))
-    check("день — 30 звёзд", payments.plan_by_days(1)["stars"] == 30)
-    check("неделя — 100 звёзд", payments.plan_by_days(7)["stars"] == 100)
-    check("месяц — 200 звёзд", payments.plan_by_days(30)["stars"] == 200)
-    check("чужого тарифа нет", payments.plan_by_days(3) is None)
+    check("день — 30 монет", payments.plan_price(1) == 30)
+    check("неделя — 100 монет", payments.plan_price(7) == 100)
+    check("месяц — 200 монет", payments.plan_price(30) == 200)
+    check("чужого тарифа нет", payments.plan_price(3) is None)
+    check("пачка монет стоит звёзд", payments.pack_price(100) == 100)
 
-    check("payload читается", payments.days_from(payments.payload_for(7)) == 7)
-    for junk in ("", "sub", "sub:", "sub:abc", "other:7", "7"):
+    check("payload читается", payments.coins_from(payments.payload_for(100)) == 100)
+    for junk in ("", "coins", "coins:", "coins:abc", "other:7", "7"):
         check(f"мусорный payload {junk!r} отбивается",
-              payments.days_from(junk) == 0)
+              payments.coins_from(junk) == 0)
+
+    # Покупка подписки за монеты.
+    ok, error = await payments.buy_subscription(USER, 7)
+    check("без монет подписку не купить", not ok, error)
+    check("и объясняем почему", "не хватает" in error.lower(), error)
+
+    balance = await db.add_coins(USER, 150, "проверка")
+    check("монеты начислились", balance == 150, str(balance))
 
     before = await db.subscription(USER)
-    fresh = await db.record_payment("charge-1", USER, 100, 7, "sub:7")
-    check("платёж записался", fresh)
-    await db.grant_paid(USER, 7)
+    ok, error = await payments.buy_subscription(USER, 7)
+    check("с монетами подписка покупается", ok, error)
     after = await db.subscription(USER)
     check("подписка продлилась", after.until > before.until)
     check("тариф стал платным", after.paid, after.kind)
+    check("монеты списались", await db.coins_of(USER) == 50,
+          str(await db.coins_of(USER)))
 
-    # Telegram присылает успешный платёж повторно, если бот не ответил
-    # вовремя. Второй раз зачислять нельзя.
-    again = await db.record_payment("charge-1", USER, 100, 7, "sub:7")
+    # Списание не должно уходить в минус.
+    ok, _ = await payments.buy_subscription(USER, 30)
+    check("в минус не уходим", not ok)
+    check("баланс не тронут", await db.coins_of(USER) == 50)
+
+    # Журнал монет.
+    history = await db.coin_history(USER)
+    check("движения пишутся в журнал", len(history) >= 2, str(len(history)))
+    check("списание отрицательное",
+          any(op["delta"] < 0 for op in history), str(history[:2]))
+
+    # Оплата звёздами: повтор не зачисляется дважды.
+    fresh = await db.record_payment("charge-1", USER, 100, 100, "coins:100")
+    check("платёж записался", fresh)
+    again = await db.record_payment("charge-1", USER, 100, 100, "coins:100")
     check("тот же платёж дважды не зачтётся", not again)
 
-    coins = await db.add_coins(USER, 100 * config.COINS_PER_STAR)
-    check("монеты начислились", coins == 100, str(coins))
     profile = await db.profile(USER)
-    check("монеты видны в профиле", profile["coins"] == 100, str(profile))
+    check("монеты видны в профиле", profile["coins"] == 50, str(profile))
     check("звёзды посчитаны", profile["stars"] == 100, str(profile))
 
     # Возвращаем триал: дальше он нужен живым.
@@ -862,6 +883,53 @@ async def check_payments() -> None:
         (int(time.time()) + 86400, USER),
     )
     await db._conn().commit()
+
+
+async def check_referrals() -> None:
+    print("\nПриглашения")
+    guest = 555900
+    await db.ensure_user(guest, "guest", "Гость")
+
+    check("ссылка разбирается",
+          handlers.ref_from(handlers.ref_payload(USER)) == USER)
+    for junk in ("", "r", "rabc", "12345", "x123"):
+        check(f"мусорный payload {junk!r} отбивается",
+              handlers.ref_from(junk) == 0)
+
+    check("пригласивший записался", await db.set_referrer(guest, USER))
+    check("и читается обратно", await db.referrer_of(guest) == USER)
+
+    # Переприсвоить приглашённого нельзя: иначе чужая ссылка забирала бы
+    # себе уже приглашённого человека.
+    check("второй раз не переписать", not await db.set_referrer(guest, OTHER))
+    check("пригласивший тот же", await db.referrer_of(guest) == USER)
+
+    # Себя пригласить нельзя, и несуществующего тоже.
+    lone = 555901
+    await db.ensure_user(lone, None, None)
+    check("сам себя не пригласишь", not await db.set_referrer(lone, lone))
+    check("несуществующий не пригласит",
+          not await db.set_referrer(lone, 999999999))
+
+    before = await db.coins_of(USER)
+    await db.add_coins(USER, config.REF_COINS, "приглашённый пришёл по ссылке")
+    stats = await db.referral_stats(USER)
+    check("приглашённые считаются", stats["invited"] == 1, str(stats))
+    check("заработок считается", stats["earned"] == config.REF_COINS, str(stats))
+    check("монеты пришли", await db.coins_of(USER) == before + config.REF_COINS)
+
+    # Доля с пополнения приглашённого.
+    was = await db.coins_of(USER)
+    await payments.reward_referrer(None, guest, 100)
+    share = 100 * config.REF_PERCENT // 100
+    check(f"доля {config.REF_PERCENT}% начислена",
+          await db.coins_of(USER) == was + share,
+          str(await db.coins_of(USER)))
+
+    # У человека без пригласившего доля никому не капает.
+    total = await db.coins_of(USER)
+    await payments.reward_referrer(None, lone, 100)
+    check("без пригласившего доли нет", await db.coins_of(USER) == total)
 
 
 async def check_materials() -> None:
@@ -1024,6 +1092,7 @@ async def run() -> None:
         await check_tdata()
         await check_account_api()
         await check_payments()
+        await check_referrals()
         await check_materials()
         await check_footer_on_media()
         await check_api()

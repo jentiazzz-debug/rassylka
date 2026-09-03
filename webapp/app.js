@@ -17,6 +17,22 @@ let login = null;
 
 const $ = (id) => document.getElementById(id);
 
+/** Иконка из набора в index.html. Своя разметка, а не эмодзи: эмодзи
+ *  рисуются шрифтом системы и на разных устройствах выглядят по-разному,
+ *  а половина из них ещё и цветная — в строгом оформлении это мусор. */
+function icon(name, cls) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'ic' + (cls ? ' ' + cls : ''));
+  // viewBox обязателен. Без него svg показывает не всю иконку, а её
+  // левый верхний угол размером в свою ширину: рисунки нарисованы в
+  // сетке 24×24, а на экране занимают 15–20 пикселей.
+  svg.setAttribute('viewBox', '0 0 24 24');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', '#i-' + name);
+  svg.appendChild(use);
+  return svg;
+}
+
 const SCREENS = [
   'loading', 'main', 'phone', 'code', 'password', 'done', 'tdata', 'new',
   'edit', 'log', 'outside',
@@ -111,14 +127,18 @@ async function api(path, body) {
   return data;
 }
 
-/** Кнопка на время запроса: заблокировать и сказать, что идёт работа. */
+/** Кнопка на время запроса: заблокировать и сказать, что идёт работа.
+ *
+ *  Сохраняем разметку, а не текст: внутри кнопок лежат иконки, и
+ *  восстановление через textContent их бы стёрло. Разметка тут своя, из
+ *  кода — не пользовательская. */
 function busy(button, text) {
-  if (!button.dataset.label) button.dataset.label = button.textContent;
+  if (button.dataset.saved === undefined) button.dataset.saved = button.innerHTML;
   button.disabled = true;
   button.textContent = text;
   return () => {
     button.disabled = false;
-    button.textContent = button.dataset.label;
+    button.innerHTML = button.dataset.saved;
   };
 }
 
@@ -147,17 +167,17 @@ function renderSubscription() {
   card.classList.toggle('expired', !sub.active);
 
   if (sub.kind === 'paid') {
-    $('sub-title').textContent = '💎 Подписка активна';
+    $('sub-title').textContent = 'Подписка активна';
     $('sub-note').textContent =
       `До ${dateText(sub.until)}. Подпись о боте в сообщениях не добавляется.`;
   } else if (sub.kind === 'trial') {
-    $('sub-title').textContent = '🎁 Пробный период';
+    $('sub-title').textContent = 'Пробный период';
     $('sub-note').textContent =
       `Осталось ${days} ${plural(days, 'день', 'дня', 'дней')}, до ` +
       `${dateText(sub.until)}. Пока он идёт, в конце каждого сообщения ` +
       'рассылки дописывается строка о том, каким ботом она сделана.';
   } else {
-    $('sub-title').textContent = '⌛️ Бесплатный период закончился';
+    $('sub-title').textContent = 'Бесплатный период закончился';
     $('sub-note').textContent =
       'Аккаунты остаются подключёнными. Чтобы продолжить рассылки, ' +
       'напишите в поддержку — включим подписку.';
@@ -179,7 +199,7 @@ function accountRow(account) {
 
   const badge = document.createElement('span');
   badge.className = 'badge' + (alive ? '' : ' dead');
-  badge.textContent = alive ? 'подключён' : 'не работает';
+  badge.append(icon(alive ? 'check' : 'x'), alive ? 'подключён' : 'не работает');
   top.appendChild(badge);
 
   const phone = document.createElement('span');
@@ -202,7 +222,7 @@ function accountRow(account) {
 
   const check = document.createElement('button');
   check.className = 'btn small';
-  check.textContent = 'Проверить';
+  check.append(icon('refresh'), 'Проверить');
   check.onclick = async () => {
     const done = busy(check, 'Проверяем…');
     const result = await api('/api/account/verify', { id: account.id });
@@ -218,7 +238,7 @@ function accountRow(account) {
 
   const forget = document.createElement('button');
   forget.className = 'btn small danger';
-  forget.textContent = 'Отключить';
+  forget.append(icon('trash'), 'Отключить');
   forget.onclick = () => {
     confirmBox(
       `Отключить ${account.name || account.phone}? Сессия будет отозвана ` +
@@ -289,9 +309,9 @@ function untilText(stamp) {
 }
 
 const STATUS = {
-  running: { label: 'идёт', css: '' },
-  paused: { label: 'на паузе', css: 'paused' },
-  stopped: { label: 'остановлена', css: 'stopped' },
+  running: { label: 'идёт', css: '', icon: 'play' },
+  paused: { label: 'на паузе', css: 'paused', icon: 'pause' },
+  stopped: { label: 'остановлена', css: 'stopped', icon: 'x' },
 };
 
 function campaignCard(campaign) {
@@ -308,7 +328,7 @@ function campaignCard(campaign) {
   const status = STATUS[campaign.status] || STATUS.stopped;
   const badge = document.createElement('span');
   badge.className = 'badge ' + status.css;
-  badge.textContent = status.label;
+  badge.append(icon(status.icon), status.label);
   top.appendChild(badge);
   row.appendChild(top);
 
@@ -317,7 +337,7 @@ function campaignCard(campaign) {
   // У рассылки материалом текст в карточке обманчив: уйдёт не он, а
   // сообщение из «Избранного» — с медиа и оформлением.
   text.textContent = campaign.content === 'saved'
-    ? '📎 Сообщение из «Избранного» — с медиа и оформлением'
+    ? 'Сообщение из «Избранного» — с медиа и оформлением'
     : campaign.text;
   row.appendChild(text);
 
@@ -339,7 +359,7 @@ function campaignCard(campaign) {
   if (campaign.note) {
     const note = document.createElement('div');
     note.className = 'campaign-facts';
-    note.textContent = '⚠️ ' + campaign.note;
+    note.textContent = campaign.note;
     row.appendChild(note);
   }
 
@@ -348,7 +368,10 @@ function campaignCard(campaign) {
 
   const toggle = document.createElement('button');
   toggle.className = 'btn small';
-  toggle.textContent = campaign.status === 'running' ? 'Пауза' : 'Продолжить';
+  toggle.append(
+    icon(campaign.status === 'running' ? 'pause' : 'play'),
+    campaign.status === 'running' ? 'Пауза' : 'Продолжить',
+  );
   toggle.onclick = async () => {
     const done = busy(toggle, '…');
     const result = await api('/api/campaign/toggle', { id: campaign.id });
@@ -364,19 +387,19 @@ function campaignCard(campaign) {
 
   const change = document.createElement('button');
   change.className = 'btn small';
-  change.textContent = 'Изменить';
+  change.append(icon('pencil'), 'Изменить');
   change.onclick = () => openEdit(campaign);
   actions.appendChild(change);
 
   const journal = document.createElement('button');
   journal.className = 'btn small';
-  journal.textContent = 'Журнал';
+  journal.append(icon('list'), 'Журнал');
   journal.onclick = () => openLog(campaign);
   actions.appendChild(journal);
 
   const remove = document.createElement('button');
   remove.className = 'btn small danger';
-  remove.textContent = 'Удалить';
+  remove.append(icon('trash'), 'Удалить');
   remove.onclick = () => {
     confirmBox(`Удалить рассылку «${campaign.title}»?`, async (yes) => {
       if (!yes) return;
@@ -441,21 +464,43 @@ function renderProfile() {
     letter.textContent = (me.name || '?').trim().charAt(0).toUpperCase();
   }
 
-  $('me-name').textContent = me.name + (me.is_premium ? ' ⭐️' : '');
+  const name = $('me-name');
+  name.textContent = me.name;
+  if (me.is_premium) name.appendChild(icon('star'));
   $('me-nick').textContent = me.username ? '@' + me.username : 'без ника';
   $('me-id').textContent = 'ID: ' + me.id;
 
   $('coins-value').textContent = me.stats.coins || 0;
-  $('coins-label').textContent = me.coin_name + ' — внутренние монеты';
+  $('coins-label').textContent = me.coin_name + ' — ими оплачивается подписка';
 
-  const stats = $('me-stats');
-  stats.textContent = '';
-  const rows = [
+  fillStats($('me-stats'), [
     ['Аккаунтов', me.stats.accounts || 0],
     ['Рассылок', me.stats.campaigns || 0],
     ['Сообщений отправлено', me.stats.sent || 0],
     ['Звёзд потрачено', me.stats.stars || 0],
-  ];
+  ]);
+
+  fillStats($('coin-history'), me.history.length
+    ? me.history.map((op) => [
+      op.reason,
+      (op.delta > 0 ? '+' : '') + op.delta,
+    ])
+    : [['Пока пусто', '—']]);
+
+  renderReferral();
+
+  const support = $('me-support');
+  support.hidden = !state.support_url;
+  if (state.support_url) support.href = state.support_url;
+
+  renderPlans();
+  renderPacks();
+}
+
+/** Строки «название — значение». clear=false дописывает к тому, что уже
+ *  есть в блоке: в карточке приглашений над ними идёт пояснение. */
+function fillStats(box, rows, clear = true) {
+  if (clear) box.textContent = '';
   for (const [label, value] of rows) {
     const row = document.createElement('div');
     row.className = 'stat-row';
@@ -464,48 +509,130 @@ function renderProfile() {
     const right = document.createElement('span');
     right.textContent = value;
     row.append(left, right);
-    stats.appendChild(row);
+    box.appendChild(row);
   }
+}
 
-  const support = $('me-support');
-  support.hidden = !state.support_url;
-  if (state.support_url) support.href = state.support_url;
+function renderReferral() {
+  const box = $('referral');
+  const ref = me.referral;
+  box.textContent = '';
 
-  renderPlans();
+  const about = document.createElement('p');
+  about.className = 'hint';
+  about.textContent =
+    `За каждого, кто придёт по вашей ссылке — ${ref.coins} ${me.coin_name}. ` +
+    `Дальше ${ref.percent}% с каждого его пополнения.`;
+  box.appendChild(about);
+
+  fillStats(box, [
+    ['Пришло по ссылке', ref.invited],
+    ['Заработано', ref.earned + ' ' + me.coin_name],
+  ], false);
+
+  if (!ref.link) return;
+
+  const link = document.createElement('div');
+  link.className = 'invite-link';
+  link.append(icon('link', 'ic-s'), ref.link);
+  box.appendChild(link);
+
+  const share = document.createElement('button');
+  share.className = 'btn ghost';
+  share.style.marginTop = '10px';
+  share.append(icon('users'), 'Позвать друзей');
+  share.onclick = () => {
+    const text = 'Рассылки в Telegram со своего аккаунта — попробуй';
+    const url = 'https://t.me/share/url?url=' + encodeURIComponent(ref.link)
+      + '&text=' + encodeURIComponent(text);
+    // openTelegramLink закрывает мини-апп и открывает окно «поделиться»
+    // прямо в клиенте. Без него ссылка ушла бы во внешний браузер.
+    if (tg && tg.openTelegramLink) tg.openTelegramLink(url);
+    else window.open(url, '_blank');
+  };
+  box.appendChild(share);
 }
 
 function renderPlans() {
   const box = $('plans');
   box.textContent = '';
+  const balance = me.stats.coins || 0;
+
   for (const plan of me.plans) {
     const button = document.createElement('button');
     button.className = 'plan';
+    button.appendChild(icon('clock'));
 
-    const name = document.createElement('span');
+    const body = document.createElement('div');
+    body.className = 'plan-body';
+    const name = document.createElement('div');
     name.className = 'plan-name';
     name.textContent = plan.days >= 30
       ? 'Месяц'
       : `${plan.days} ${plural(plan.days, 'день', 'дня', 'дней')}`;
-
-    const perDay = document.createElement('span');
-    perDay.className = 'plan-day';
-    perDay.textContent = plan.days > 1
-      ? `${Math.round(plan.stars / plan.days)} ⭐️/день`
-      : '';
+    const day = document.createElement('div');
+    day.className = 'plan-day';
+    // Не хватает монет — говорим об этом на самой кнопке, а не после
+    // нажатия: отказ по нажатию читается как поломка.
+    day.textContent = balance < plan.coins
+      ? `не хватает ${plan.coins - balance} ${me.coin_name}`
+      : (plan.days > 1
+        ? `${Math.round(plan.coins / plan.days)} ${me.coin_name} в день`
+        : '');
+    body.append(name, day);
+    button.appendChild(body);
 
     const price = document.createElement('span');
     price.className = 'plan-price';
-    price.textContent = plan.stars + ' ⭐️';
+    price.append(String(plan.coins), icon('coin', 'ic-s'));
+    button.appendChild(price);
 
-    button.append(name, perDay, price);
-    button.onclick = () => buy(plan, button);
+    button.onclick = () => subscribe(plan, button);
     box.appendChild(button);
   }
 }
 
-async function buy(plan, button) {
+function renderPacks() {
+  const box = $('packs');
+  box.textContent = '';
+  for (const pack of me.packs) {
+    const button = document.createElement('button');
+    button.className = 'plan';
+    button.appendChild(icon('coin'));
+
+    const body = document.createElement('div');
+    body.className = 'plan-body';
+    const name = document.createElement('div');
+    name.className = 'plan-name';
+    name.textContent = `${pack.coins} ${me.coin_name}`;
+    body.appendChild(name);
+    button.appendChild(body);
+
+    const price = document.createElement('span');
+    price.className = 'plan-price';
+    price.append(String(pack.stars), icon('star', 'ic-s'));
+    button.appendChild(price);
+
+    button.onclick = () => topUp(pack, button);
+    box.appendChild(button);
+  }
+}
+
+async function subscribe(plan, button) {
+  const done = busy(button, 'Оформляем…');
+  const result = await api('/api/subscribe', { days: plan.days });
+  done();
+  if (!result.ok) {
+    alertBox(result.error);
+    return;
+  }
+  haptic('success');
+  await refresh();
+}
+
+async function topUp(pack, button) {
   const done = busy(button, 'Открываем счёт…');
-  const result = await api('/api/invoice', { days: plan.days });
+  const result = await api('/api/invoice', { coins: pack.coins });
   done();
   if (!result.ok) {
     alertBox(result.error);
@@ -515,15 +642,15 @@ async function buy(plan, button) {
     alertBox('Ваша версия Telegram не умеет открывать счёт. Обновите приложение.');
     return;
   }
-  // Ответ openInvoice — это статус в браузере, и подписку по нему никто
-  // не продлевает: настоящее подтверждение приходит боту от Telegram
+  // Ответ openInvoice — это статус в браузере, и монеты по нему никто не
+  // начисляет: настоящее подтверждение приходит боту от Telegram
   // отдельным апдейтом. Здесь только показываем, что произошло, и
   // перечитываем состояние.
-  tg.openInvoice(result.link, async (status) => {
+  tg.openInvoice(result.link, (status) => {
     if (status === 'paid') {
       haptic('success');
       // Платёж доезжает до бота не мгновенно — даём ему секунду.
-      setTimeout(refresh, 1200);
+      setTimeout(refresh, 1400);
     } else if (status === 'failed') {
       alertBox('Оплата не прошла.');
     }
@@ -654,10 +781,8 @@ async function openLog(campaign) {
     const row = document.createElement('div');
     row.className = 'log-row';
 
-    const mark = document.createElement('span');
-    mark.className = 'log-mark ' + (send.ok ? 'good' : 'bad');
-    mark.textContent = send.ok ? '✓' : '✕';
-    row.appendChild(mark);
+    row.appendChild(icon(send.ok ? 'check' : 'x',
+      'ic-s log-mark ' + (send.ok ? 'good' : 'bad')));
 
     const body = document.createElement('span');
     body.className = 'log-chat';
@@ -771,8 +896,8 @@ const KINDS = { user: 'личка', group: 'группа', channel: 'канал'
 
 /** Значок типа материала — по нему список читается с одного взгляда. */
 const MATERIAL_ICONS = {
-  text: '📝', photo: '🖼', video: '🎬', gif: '🎞',
-  sticker: '🎨', audio: '🎧', document: '📎',
+  text: 'text', photo: 'image', video: 'video', gif: 'film',
+  sticker: 'smile', audio: 'mic', document: 'file',
 };
 
 let draft = null;
@@ -797,10 +922,7 @@ function renderMaterials(box, selectedId, onPick) {
     radio.onchange = () => onPick(material.msg_id);
     row.appendChild(radio);
 
-    const mark = document.createElement('span');
-    mark.className = 'pick-mark';
-    mark.textContent = MATERIAL_ICONS[material.kind] || '📝';
-    row.appendChild(mark);
+    row.appendChild(icon(MATERIAL_ICONS[material.kind] || 'text', 'pick-mark'));
 
     const title = document.createElement('span');
     title.className = 'pick-title';
@@ -1309,6 +1431,12 @@ async function boot() {
   }
   tg.ready();
   tg.expand();
+  // Шапка и фон клиента — в тон приложению. Без этого над светлым
+  // стеклом висит чёрная полоса из тёмной темы Telegram.
+  try {
+    if (tg.setHeaderColor) tg.setHeaderColor('#f2f4f8');
+    if (tg.setBackgroundColor) tg.setBackgroundColor('#eef0f5');
+  } catch (error) { /* старый клиент — не беда */ }
   wire();
   await refresh();
   // Вход, начатый до сворачивания приложения, продолжается с того же

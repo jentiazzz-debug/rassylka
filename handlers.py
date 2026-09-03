@@ -36,9 +36,72 @@ async def _remember(message: Message) -> None:
     )
 
 
+def ref_payload(user_id: int) -> str:
+    """Метка приглашения в ссылке. Буква впереди — чтобы отличить её от
+    любых других payload, которые появятся позже."""
+    return f"r{user_id}"
+
+
+def ref_from(payload: str) -> int:
+    """Кто пригласил. 0 — payload не про приглашение."""
+    payload = (payload or "").strip()
+    if payload.startswith("r") and payload[1:].isdigit():
+        return int(payload[1:])
+    return 0
+
+
+async def invite_link(bot, user_id: int) -> str:
+    me = await bot.me()
+    return f"https://t.me/{me.username}?start={ref_payload(user_id)}"
+
+
+async def _handle_referral(message: Message) -> None:
+    """Записать пригласившего и начислить ему монеты.
+
+    Делается после того, как приглашённый уже заведён в базе: ref_by
+    ставится один раз и только тому, у кого его ещё нет, — иначе
+    приглашённого переприсвоила бы любая следующая ссылка.
+    """
+    user = message.from_user
+    parts = (message.text or "").split(maxsplit=1)
+    inviter = ref_from(parts[1]) if len(parts) > 1 else 0
+    if not inviter or user is None:
+        return
+    if not await db.set_referrer(user.id, inviter):
+        return
+    if not config.REF_COINS:
+        return
+    balance = await db.add_coins(
+        inviter, config.REF_COINS, "приглашённый пришёл по ссылке"
+    )
+    log.info("приглашение: %s привёл %s", inviter, user.id)
+    try:
+        await message.bot.send_message(
+            inviter, texts.referral_joined(config.REF_COINS, balance)
+        )
+    except Exception as error:  # пригласивший мог закрыть личку
+        log.debug("уведомление о приглашении не ушло: %s", error)
+
+
+@router.message(Command("invite"))
+async def invite_command(message: Message) -> None:
+    await _remember(message)
+    user = message.from_user
+    if user is None:
+        return
+    await message.answer(
+        texts.invite(
+            await invite_link(message.bot, user.id),
+            await db.referral_stats(user.id),
+        ),
+        reply_markup=keyboards.main_menu(),
+    )
+
+
 @router.message(CommandStart())
 async def start(message: Message) -> None:
     await _remember(message)
+    await _handle_referral(message)
     user = message.from_user
     subscription = await db.subscription(user.id if user else 0)
     await message.answer(
