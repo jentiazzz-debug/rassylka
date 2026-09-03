@@ -832,7 +832,24 @@ async def check_payments() -> None:
     check("неделя — 100 монет", payments.plan_price(7) == 100)
     check("месяц — 200 монет", payments.plan_price(30) == 200)
     check("чужого тарифа нет", payments.plan_price(3) is None)
-    check("пачка монет стоит звёзд", payments.pack_price(100) == 100)
+    # Пачки и скидки.
+    check("пачки разобрались", len(config.COIN_PACKS) == 4,
+          str(config.COIN_PACKS))
+    check("обычная пачка по курсу", payments.pack_price(100) == 100)
+    check("пачка со скидкой дешевле", payments.pack_price(200) == 190)
+    check("и скидка видна", payments.base_price(200) == 200)
+    check("500 со скидкой", payments.pack_price(500) == 460)
+
+    # Своё количество: в границах можно, за границами нельзя.
+    check("пачка продаётся", payments.sellable(100))
+    check("своё количество в границах продаётся", payments.sellable(777))
+    check("ниже нижней границы нельзя",
+          not payments.sellable(config.COIN_MIN - 1))
+    check("выше верхней нельзя", not payments.sellable(config.COIN_MAX + 1))
+    check("ноль нельзя", not payments.sellable(0))
+    check("отрицательное нельзя", not payments.sellable(-100))
+    check("своё количество по обычному курсу",
+          payments.pack_price(777) == 777 * config.STARS_PER_COIN)
 
     check("payload читается", payments.coins_from(payments.payload_for(100)) == 100)
     for junk in ("", "coins", "coins:", "coins:abc", "other:7", "7"):

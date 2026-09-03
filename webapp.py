@@ -370,9 +370,19 @@ async def api_profile(request: web.Request, user: dict, data: dict) -> web.Respo
                 for plan in config.PLANS
             ],
             "packs": [
-                {"coins": coins, "stars": payments.pack_price(coins)}
-                for coins in config.COIN_PACKS
+                {
+                    "coins": pack["coins"],
+                    "stars": pack["stars"],
+                    "base": payments.base_price(pack["coins"]),
+                    "popular": pack["coins"] == config.COIN_PACK_POPULAR,
+                }
+                for pack in config.COIN_PACKS
             ],
+            "custom": {
+                "min": config.COIN_MIN,
+                "max": config.COIN_MAX,
+                "rate": config.STARS_PER_COIN,
+            },
             "history": await db.coin_history(user_id, 10),
             "referral": {
                 **await db.referral_stats(user_id),
@@ -395,8 +405,11 @@ async def api_invoice(request: web.Request, user: dict, data: dict) -> web.Respo
     if _bot is None:
         return _fail("Оплата сейчас недоступна. Напишите в поддержку.")
     coins = _int(data.get("coins"))
-    if coins not in config.COIN_PACKS:
-        return _fail("Такой пачки монет нет.")
+    if not payments.sellable(coins):
+        return _fail(
+            f"Можно купить от {config.COIN_MIN} до {config.COIN_MAX} "
+            f"{config.COIN_NAME}."
+        )
     try:
         link = await payments.invoice_link(_bot, coins)
     except Exception as error:

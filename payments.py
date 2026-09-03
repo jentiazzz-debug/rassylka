@@ -61,8 +61,28 @@ def plan_price(days: int) -> int | None:
 
 
 def pack_price(coins: int) -> int:
-    """Во сколько звёзд обойдётся пачка монет."""
+    """Во сколько звёзд обойдётся столько монет.
+
+    У готовых пачек цена своя — в ней может быть скидка. Своё количество
+    считается по обычному курсу: скидку за произвольную сумму давать
+    незачем, иначе она есть у всех и это просто другой курс.
+    """
+    for pack in config.COIN_PACKS:
+        if pack["coins"] == coins:
+            return pack["stars"]
     return coins * config.STARS_PER_COIN
+
+
+def base_price(coins: int) -> int:
+    """Цена без скидки — её показывают зачёркнутой."""
+    return coins * config.STARS_PER_COIN
+
+
+def sellable(coins: int) -> bool:
+    """Можно ли выставить счёт на столько монет."""
+    if any(pack["coins"] == coins for pack in config.COIN_PACKS):
+        return True
+    return config.COIN_MIN <= coins <= config.COIN_MAX
 
 
 def payload_for(coins: int) -> str:
@@ -79,8 +99,8 @@ def coins_from(payload: str) -> int:
 
 async def invoice_link(bot, coins: int) -> str:
     """Ссылка на счёт для мини-аппа."""
-    if coins not in config.COIN_PACKS:
-        raise ValueError("нет такой пачки монет")
+    if not sellable(coins):
+        raise ValueError("недопустимое количество монет")
     stars = pack_price(coins)
     return await bot.create_invoice_link(
         title=texts.pack_title(coins),
@@ -119,7 +139,7 @@ async def confirm(query: PreCheckoutQuery) -> None:
     платёж.
     """
     coins = coins_from(query.invoice_payload)
-    if not coins or coins not in config.COIN_PACKS:
+    if not coins or not sellable(coins):
         await query.answer(
             ok=False, error_message="Этот счёт больше не действует."
         )
@@ -139,6 +159,18 @@ async def paid(message: Message) -> None:
         return
 
     stars = int(payment.total_amount or 0)
+    # Сколько заплатили — должно совпадать с ценой того, что покупали.
+    # Расхождение значит, что счёт собран не нами; начисляем тогда по
+    # факту оплаты, а не по тому, что написано в счёте.
+    if stars != pack_price(coins):
+        log.warning(
+            "цена не сошлась: за %s монет заплачено %s звёзд (ждали %s)",
+            coins, stars, pack_price(coins),
+        )
+        coins = max(0, stars // config.STARS_PER_COIN)
+        if not coins:
+            return
+
     fresh = await db.record_payment(
         payment.telegram_payment_charge_id,
         user.id,

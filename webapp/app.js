@@ -592,30 +592,112 @@ function renderPlans() {
   }
 }
 
+/** Сколько монет собираемся купить. Выбор отдельно от нажатия «Оплатить»:
+ *  так видно итог до того, как откроется счёт. */
+let packChoice = null;
+
 function renderPacks() {
   const box = $('packs');
   box.textContent = '';
+
+  if (packChoice === null && me.packs.length) {
+    const popular = me.packs.find((p) => p.popular) || me.packs[0];
+    packChoice = popular.coins;
+  }
+
+  // Максимальная скидка — в заголовок раздела: она и есть повод
+  // посмотреть на пачки, а не пройти мимо.
+  const best = me.packs.reduce(
+    (max, p) => Math.max(max, p.base > p.stars
+      ? Math.round((1 - p.stars / p.base) * 100) : 0), 0);
+  $('packs-aside').textContent = best ? `скидка до ${best}%` : '';
+
   for (const pack of me.packs) {
     const button = document.createElement('button');
-    button.className = 'plan';
-    button.appendChild(icon('coin'));
+    button.className = 'pack' + (pack.coins === packChoice ? ' picked' : '');
 
-    const body = document.createElement('div');
-    body.className = 'plan-body';
-    const name = document.createElement('div');
-    name.className = 'plan-name';
-    name.textContent = `${pack.coins} ${me.coin_name}`;
-    body.appendChild(name);
-    button.appendChild(body);
+    if (pack.popular) {
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = 'популярно';
+      button.appendChild(tag);
+    }
+    const off = pack.base > pack.stars
+      ? Math.round((1 - pack.stars / pack.base) * 100) : 0;
+    if (off) {
+      const save = document.createElement('span');
+      save.className = 'tag save';
+      save.textContent = '−' + off + '%';
+      button.appendChild(save);
+    }
 
-    const price = document.createElement('span');
-    price.className = 'plan-price';
+    const count = document.createElement('div');
+    count.className = 'pack-count';
+    count.textContent = pack.coins;
+    const label = document.createElement('div');
+    label.className = 'pack-label';
+    label.textContent = me.coin_name;
+
+    const price = document.createElement('div');
+    price.className = 'pack-price';
+    if (off) {
+      const was = document.createElement('span');
+      was.className = 'pack-was';
+      was.textContent = pack.base;
+      price.appendChild(was);
+    }
     price.append(String(pack.stars), icon('star', 'ic-s'));
-    button.appendChild(price);
 
-    button.onclick = () => topUp(pack, button);
+    button.append(count, label, price);
+    button.onclick = () => {
+      packChoice = pack.coins;
+      renderPacks();
+      haptic('light');
+    };
     box.appendChild(button);
   }
+
+  renderPayRow();
+}
+
+function renderPayRow() {
+  const total = $('pay-total');
+  total.textContent = '';
+  if (!packChoice) {
+    total.textContent = '—';
+    $('pay-stars').disabled = true;
+    return;
+  }
+  $('pay-stars').disabled = false;
+  total.append(String(priceOf(packChoice)), icon('star'));
+}
+
+/** Цена в звёздах: у готовой пачки своя (в ней бывает скидка), у своего
+ *  количества — по обычному курсу. Та же логика, что на сервере. */
+function priceOf(coins) {
+  const pack = me.packs.find((p) => p.coins === coins);
+  return pack ? pack.stars : coins * me.custom.rate;
+}
+
+function askCustom() {
+  const limits = me.custom;
+  const raw = window.prompt(
+    `Сколько ${me.coin_name} купить? От ${limits.min} до ${limits.max}.`,
+    String(packChoice || limits.min),
+  );
+  if (raw === null) return;
+  const coins = parseInt(String(raw).replace(/\D/g, ''), 10);
+  if (!coins || coins < limits.min || coins > limits.max) {
+    alertBox(`Можно от ${limits.min} до ${limits.max} ${me.coin_name}.`);
+    return;
+  }
+  packChoice = coins;
+  renderPacks();
+}
+
+async function payStars() {
+  if (!packChoice) return;
+  await topUp({ coins: packChoice }, $('pay-stars'));
 }
 
 async function subscribe(plan, button) {
@@ -1368,6 +1450,8 @@ function wire() {
     button.onclick = refresh;
   }
 
+  $('pack-custom').onclick = askCustom;
+  $('pay-stars').onclick = payStars;
   $('add-tdata').onclick = openTdata;
   $('tdata-send').onclick = uploadTdata;
   $('add-campaign').onclick = openNew;

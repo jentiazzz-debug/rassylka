@@ -178,12 +178,40 @@ PLANS = _plans(os.getenv("PLANS") or "1:30,7:100,30:200")
 #: сайт, и единственный, который Telegram разрешает для цифровых услуг.
 STARS_PER_COIN = max(1, _int("STARS_PER_COIN", "1"))
 
-#: Пачки монет на покупку, штук.
-COIN_PACKS = [
-    int(chunk) for chunk in (os.getenv("COIN_PACKS") or "30,100,200,500")
-    .replace(";", ",").split(",")
-    if chunk.strip().isdigit()
-] or [30, 100, 200, 500]
+def _packs(raw: str) -> list[dict]:
+    """Пачки монет: «монеты» или «монеты:цена в звёздах».
+
+    Вторая форма нужна для скидки: 500 монет за 475 звёзд. Скидка потом
+    считается сама, из разницы с обычной ценой, — отдельным полем её
+    задавать нельзя, иначе однажды она разъедется с настоящей.
+    """
+    out: list[dict] = []
+    for chunk in raw.replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        coins, _, stars = chunk.partition(":")
+        if not coins.strip().isdigit():
+            continue
+        amount = int(coins)
+        price = int(stars) if stars.strip().isdigit() else amount * STARS_PER_COIN
+        out.append({"coins": amount, "stars": max(1, price)})
+    return out
+
+
+#: Пачки монет на покупку. Пример со скидкой: 200:190,500:460.
+COIN_PACKS = _packs(
+    os.getenv("COIN_PACKS") or "50,100,200:190,500:460"
+) or _packs("50,100,200,500")
+
+#: Какую пачку пометить как популярную. 0 — не помечать ни одну.
+COIN_PACK_POPULAR = _int("COIN_PACK_POPULAR", "100")
+
+#: Границы для «своего количества». Нижняя — чтобы счёт на одну монету
+#: не съедал комиссию, верхняя — чтобы опечатка в поле не выставила счёт
+#: на миллион звёзд.
+COIN_MIN = max(1, _int("COIN_MIN", "10"))
+COIN_MAX = max(COIN_MIN, _int("COIN_MAX", "10000"))
 
 #: Как называется внутренняя валюта.
 COIN_NAME = (os.getenv("COIN_NAME") or "Slx").strip()

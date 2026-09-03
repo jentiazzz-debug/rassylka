@@ -51,15 +51,30 @@ body {
   letter-spacing: -.01em;
   -webkit-font-smoothing: antialiased;
 
-  /* Пятна света под стеклом. Без них размывать нечего. */
+  background: #eef0f5;
+  min-height: 100vh;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* Пятна света под стеклом: без них размывать нечего, стекло выглядит
+   серым прямоугольником.
+
+   Отдельным закреплённым слоем, а не фоном body с
+   background-attachment: fixed. Тот способ короче, но в WebView он
+   давно известен как источник рывков и пустых кадров при прокрутке:
+   браузер перерисовывает фон на каждый пиксель скролла. Здесь это
+   ловилось прямо на снимке экрана — страница уезжала в пустоту. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
   background:
     radial-gradient(760px 420px at 8% -6%, #ffffff 0%, rgba(255,255,255,0) 62%),
     radial-gradient(620px 420px at 104% 4%, #e3e8f2 0%, rgba(227,232,242,0) 58%),
     radial-gradient(680px 460px at 46% 106%, #dfe4ee 0%, rgba(223,228,238,0) 60%),
     linear-gradient(180deg, #f7f8fb 0%, #e9ecf2 100%);
-  background-attachment: fixed;
-  min-height: 100vh;
-  padding-bottom: env(safe-area-inset-bottom, 0);
 }
 
 #app { padding: 18px 16px 28px; max-width: 560px; margin: 0 auto; }
@@ -118,12 +133,19 @@ body {
   padding: 16px 18px;
 }
 
-/* Стекло держится на backdrop-filter. Там, где его нет, полупрозрачная
-   заливка превращается в мутное пятно — делаем её плотной. */
+/* Размытие стоит только на карточках верхнего уровня и на панели
+   разделов, а не на каждой кнопке и поле. Причина не в красоте:
+   backdrop-filter — самый дорогой эффект в списке, каждый такой слой
+   composited отдельно, и на длинной странице их набирались десятки.
+   Пролистывание начинало дёргаться, а снимок экрана выходил пустым —
+   композитор попросту не успевал. Всё остальное берёт плотную
+   полупрозрачную заливку: на глаз разница невелика, стекло держат
+   кромка и блик.
+
+   Там, где backdrop-filter не поддерживается вовсе, заливка карточек
+   становится плотной: полупрозрачность без размытия — мутное пятно. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .card, .account, .campaign, .picker, .field, .btn.ghost, #tabbar, .plan {
-    background: rgba(255, 255, 255, .93);
-  }
+  .card, #tabbar { background: rgba(255, 255, 255, .93); }
 }
 
 /* --- профиль --- */
@@ -186,9 +208,7 @@ body {
   margin-bottom: 9px;
   border: 1px solid var(--glass-edge);
   border-radius: var(--radius-s);
-  background: var(--glass-soft);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: rgba(255, 255, 255, .58);
   box-shadow: var(--shadow-soft), inset 0 1px 0 rgba(255, 255, 255, .85);
   color: var(--ink);
   font: inherit;
@@ -211,6 +231,114 @@ body {
   white-space: nowrap;
 }
 .plan-price .ic { width: 15px; height: 15px; color: inherit; }
+
+/* --- сетка пачек монет --- */
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.section-aside { font-size: 12px; color: var(--ink-3); }
+
+/* Запас сверху — под значки «популярно» и скидки: они висят на кромке
+   карточки и без него налезают на заголовок раздела. */
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  margin-top: 7px;
+}
+
+.pack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 17px 10px 14px;
+  border: 1.5px solid var(--glass-edge);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, .58);
+  box-shadow: var(--shadow-soft), inset 0 1px 0 rgba(255, 255, 255, .85);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color .14s ease, transform .14s ease;
+}
+.pack:active { transform: scale(.98); }
+
+/* Выбранная пачка — рамкой, а не заливкой: заливка спорила бы со
+   значками скидки и «популярно», которые сидят прямо на кромке. */
+.pack.picked { border-color: var(--ink); }
+
+.pack-count {
+  font-size: 25px;
+  font-weight: 700;
+  letter-spacing: -.03em;
+  line-height: 1.1;
+}
+.pack-label { font-size: 11.5px; color: var(--ink-3); }
+.pack-price {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.pack-price .ic { width: 14px; height: 14px; color: var(--ink-2); }
+.pack-was { color: var(--ink-3); text-decoration: line-through; font-weight: 500; }
+
+.tag {
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2.5px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: #fff;
+  background: linear-gradient(178deg, #2c313b, #14161b);
+  box-shadow: 0 3px 10px rgba(20, 22, 27, .28);
+}
+.tag.save {
+  left: auto;
+  right: 9px;
+  transform: none;
+  background: #1f7a4d;
+  box-shadow: 0 3px 10px rgba(31, 122, 77, .3);
+}
+
+.pay-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px;
+}
+.pay-total {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -.02em;
+}
+.pay-total .ic { width: 16px; height: 16px; }
+
+/* Кнопка оплаты — единственное цветное пятно на экране. Звёзды у
+   Telegram жёлтые, и человек ищет глазами именно этот цвет. */
+.btn.stars {
+  background: linear-gradient(178deg, #ffb32c 0%, #f59204 100%);
+  color: #2a1c00;
+  box-shadow: 0 8px 22px rgba(232, 145, 7, .32),
+              inset 0 1px 0 rgba(255, 255, 255, .45);
+}
 
 .stat-row {
   display: flex;
@@ -242,9 +370,7 @@ body {
 /* --- аккаунты и рассылки --- */
 
 .account, .campaign {
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: rgba(255, 255, 255, .72);
   border: 1px solid var(--glass-edge);
   border-radius: var(--radius);
   box-shadow: var(--shadow-soft), inset 0 1px 0 rgba(255, 255, 255, .9);
@@ -328,9 +454,7 @@ body {
 }
 
 .btn.ghost {
-  background: var(--glass-soft);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: rgba(255, 255, 255, .58);
   border: 1px solid var(--glass-edge);
   color: var(--ink);
   box-shadow: var(--shadow-soft);
@@ -357,9 +481,7 @@ body {
   padding: 14px 15px;
   border-radius: var(--radius-s);
   border: 1px solid var(--glass-edge);
-  background: var(--glass-soft);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: rgba(255, 255, 255, .58);
   box-shadow: inset 0 1px 2px rgba(22, 26, 38, .04);
   color: var(--ink);
   font: inherit;
@@ -447,9 +569,7 @@ input[type="file"].field::file-selector-button {
   padding: 5px;
   border: 1px solid var(--glass-edge);
   border-radius: var(--radius);
-  background: var(--glass-soft);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: rgba(255, 255, 255, .58);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .8);
 }
 
@@ -474,9 +594,7 @@ input[type="file"].field::file-selector-button {
   align-items: center;
   gap: 10px;
   padding: 11px 13px;
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--blur);
-  backdrop-filter: var(--blur);
+  background: rgba(255, 255, 255, .72);
   border: 1px solid var(--glass-edge);
   border-radius: var(--radius-s);
   margin-bottom: 7px;
