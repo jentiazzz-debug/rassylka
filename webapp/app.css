@@ -170,6 +170,100 @@ input[type="file"].field::file-selector-button {
   .spinner { animation-duration: 3s; }
 }
 
+/* --- нижняя панель разделов --- */
+
+#tabbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  background: var(--bg);
+  border-top: 1px solid var(--card);
+  /* Домашняя полоса на телефонах без кнопок съедает низ экрана: без
+     этого отступа третья вкладка оказывается под ней. */
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  z-index: 10;
+}
+
+.tab-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 9px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--hint);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.tab-item.active { color: var(--button); font-weight: 600; }
+.tab-icon { font-size: 19px; line-height: 1; }
+
+/* Панель перекрывает низ страницы — оставляем ей место. */
+body.with-tabs #app { padding-bottom: 88px; }
+
+/* --- профиль --- */
+
+.me { display: flex; align-items: center; gap: 14px; padding: 4px 0 8px; }
+
+.me-photo {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  flex: none;
+  object-fit: cover;
+}
+
+/* Запасной кружок с буквой: у части людей аватарки нет вовсе, а у
+   закрытых профилей Telegram её не отдаёт. */
+.me-letter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--button);
+  color: var(--button-text);
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.me-body { min-width: 0; }
+.me-name { font-size: 18px; font-weight: 600; }
+
+.card.coins { text-align: center; padding: 18px 16px; }
+.coins-value { font-size: 30px; font-weight: 700; line-height: 1.1; }
+
+.plan {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 13px 16px;
+  margin-bottom: 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.plan-name { flex: 1; font-weight: 600; }
+.plan-price { font-weight: 600; color: var(--button); white-space: nowrap; }
+.plan-day { font-size: 12px; color: var(--hint); }
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  font-size: 14px;
+}
+.stat-row span:first-child { color: var(--hint); }
+
 /* --- рассылки --- */
 
 .campaign {
@@ -209,7 +303,7 @@ input[type="file"].field::file-selector-button {
 }
 
 .tabs { display: flex; gap: 8px; }
-.tab {
+.tab, .ctab, .etab {
   flex: 1;
   padding: 9px 12px;
   border: 0;
@@ -220,7 +314,14 @@ input[type="file"].field::file-selector-button {
   font-size: 14px;
   cursor: pointer;
 }
-.tab.active { background: var(--button); color: var(--button-text); font-weight: 600; }
+.tab.active, .ctab.active, .etab.active {
+  background: var(--button);
+  color: var(--button-text);
+  font-weight: 600;
+}
+
+/* Материал в списке: значок типа, текст в одну строку. */
+.pick-mark { flex: none; font-size: 15px; }
 
 .picker {
   /* Список диалогов бывает на сотни строк: он прокручивается внутри

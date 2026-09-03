@@ -155,6 +155,32 @@ TRIAL_DAYS = max(0, _int("TRIAL_DAYS", "5"))
 FREE_FOOTER = (os.getenv("FREE_FOOTER") or "").strip()
 
 
+def _plans(raw: str) -> list[dict]:
+    """Тарифы в виде «дни:звёзды», через запятую."""
+    out: list[dict] = []
+    for chunk in raw.replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk or ":" not in chunk:
+            continue
+        days, _, stars = chunk.partition(":")
+        if days.strip().isdigit() and stars.strip().isdigit():
+            out.append({"days": int(days), "stars": int(stars)})
+    return out
+
+
+#: Что почём. Оплата — звёздами Telegram: внутри мини-аппа это
+#: единственный способ взять деньги, не уводя человека на сторонний
+#: сайт, и единственный, который Telegram разрешает для цифровых услуг.
+PLANS = _plans(os.getenv("PLANS") or "1:30,7:100,30:200")
+
+#: Сколько монет начисляется за звезду. Монеты — внутренний счёт
+#: человека: они копятся с оплат и видны в профиле.
+COINS_PER_STAR = max(0, _int("COINS_PER_STAR", "1"))
+
+#: Как называется внутренняя валюта.
+COIN_NAME = (os.getenv("COIN_NAME") or "Slx").strip()
+
+
 # --- рассылка ---------------------------------------------------------
 
 #: Как часто движок смотрит, кому пора писать. Не интервал рассылки —

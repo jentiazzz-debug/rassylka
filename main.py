@@ -25,6 +25,7 @@ import crypto
 import db
 import handlers
 import keyboards
+import payments
 import webapp
 
 logging.basicConfig(
@@ -63,7 +64,14 @@ async def run() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dispatcher = Dispatcher()
+    # Платежи впереди общего роутера: у handlers последним стоит хендлер
+    # на любое сообщение в личке, и сообщение об успешной оплате он бы
+    # съел — подписка не продлилась бы, а деньги ушли.
+    dispatcher.include_router(payments.router)
     dispatcher.include_router(handlers.router)
+
+    # Счета на оплату выписывает бот, а просит их мини-апп.
+    webapp.use_bot(bot)
 
     me = await bot.me()
     log.info("запущен как @%s, aiogram %s", me.username, aiogram_version)

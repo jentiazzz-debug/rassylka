@@ -20,13 +20,58 @@
     <p class="hint center">Загружаем…</p>
   </section>
 
-  <!-- Главный экран: подписка и подключённые аккаунты. -->
+  <!-- Главный экран: три раздела, между ними переключает нижняя панель. -->
   <section id="screen-main" class="screen" hidden>
+
+  <!-- Профиль: кто вы, монеты, подписка, тарифы. -->
+  <div id="pane-profile" class="pane">
+    <div class="me">
+      <img id="me-photo" class="me-photo" alt="" hidden>
+      <div id="me-letter" class="me-photo me-letter"></div>
+      <div class="me-body">
+        <div class="me-name" id="me-name">—</div>
+        <div class="hint" id="me-nick"></div>
+        <div class="hint small" id="me-id"></div>
+      </div>
+    </div>
+
+    <div class="card coins">
+      <div class="coins-value" id="coins-value">0</div>
+      <div class="hint" id="coins-label">монет</div>
+    </div>
+
     <div id="sub-card" class="card sub">
       <div class="sub-title" id="sub-title">—</div>
       <div class="sub-note hint" id="sub-note"></div>
     </div>
 
+    <h2 class="section-title">Продлить подписку</h2>
+    <div id="plans"></div>
+    <p class="hint small">
+      Оплата звёздами Telegram. Подписка снимает подпись о боте в конце
+      сообщений и продлевает доступ к рассылкам.
+    </p>
+
+    <h2 class="section-title">Сводка</h2>
+    <div class="card" id="me-stats"></div>
+
+    <a id="me-support" class="btn ghost" href="#" hidden>Поддержка</a>
+  </div>
+
+  <!-- Рассылки. -->
+  <div id="pane-mail" class="pane" hidden>
+    <h2 class="section-title">Рассылки</h2>
+    <div id="campaigns"></div>
+    <p id="campaigns-empty" class="hint" hidden>
+      Рассылок пока нет. Выберите чаты или папку, задайте сообщение и
+      интервал — бот будет писать по кругу: чат за чатом.
+    </p>
+    <button id="add-campaign" class="btn primary">Новая рассылка</button>
+    <p id="campaign-note" class="hint center" hidden></p>
+  </div>
+
+  <!-- Аккаунты. -->
+  <div id="pane-accounts" class="pane" hidden>
     <h2 class="section-title">Аккаунты для рассылки</h2>
     <div id="accounts"></div>
 
@@ -43,16 +88,24 @@
       Подключённая сессия видна в Telegram → Настройки → Устройства —
       отозвать её можно там в любой момент.
     </p>
+  </div>
 
-    <h2 class="section-title">Рассылки</h2>
-    <div id="campaigns"></div>
-    <p id="campaigns-empty" class="hint" hidden>
-      Рассылок пока нет. Выберите чаты или папку, напишите сообщение и
-      задайте интервал — бот будет писать по кругу: чат за чатом.
-    </p>
-    <button id="add-campaign" class="btn primary">Новая рассылка</button>
-    <p id="campaign-note" class="hint center" hidden></p>
   </section>
+
+  <!-- Нижняя панель разделов. Видна только на главном экране: на шагах
+       входа и создания рассылки она увела бы человека из середины
+       заполнения формы. -->
+  <nav id="tabbar" hidden>
+    <button class="tab-item active" data-pane="profile">
+      <span class="tab-icon">👤</span>Профиль
+    </button>
+    <button class="tab-item" data-pane="mail">
+      <span class="tab-icon">📣</span>Рассылки
+    </button>
+    <button class="tab-item" data-pane="accounts">
+      <span class="tab-icon">🔑</span>Аккаунты
+    </button>
+  </nav>
 
   <!-- Создание рассылки: куда, что и как часто. -->
   <section id="screen-new" class="screen" hidden>
@@ -86,10 +139,33 @@
     <button id="rescan" class="btn ghost">↻ Обновить список чатов</button>
     <p id="scan-note" class="hint center" hidden></p>
 
-    <label class="label" for="campaign-text">Сообщение</label>
-    <textarea id="campaign-text" class="field area" rows="5"
-              placeholder="Текст, который уйдёт в каждый чат"></textarea>
-    <p id="text-count" class="hint small"></p>
+    <label class="label">Сообщение</label>
+    <div class="tabs">
+      <button class="ctab active" data-ctab="text">Текст</button>
+      <button class="ctab" data-ctab="saved">Из «Избранного»</button>
+    </div>
+
+    <div id="ctab-text">
+      <textarea id="campaign-text" class="field area" rows="5"
+                placeholder="Текст, который уйдёт в каждый чат"></textarea>
+      <p id="text-count" class="hint small"></p>
+    </div>
+
+    <div id="ctab-saved" hidden>
+      <p class="hint">
+        Отправьте нужное сообщение в «Избранное» того аккаунта, с которого
+        рассылаете, обновите список — и выберите его здесь. Уйдёт ровно
+        оно: фото, гифка, видео, кружок, премиум-стикер, премиум-эмодзи,
+        цитата, жирный и курсив.
+      </p>
+      <div id="material-list" class="picker"></div>
+      <p class="hint small">
+        Премиум-эмодзи и премиум-стикеры уходят, только если у самого
+        аккаунта есть Telegram Premium. У стикера не бывает подписи —
+        строка о боте к нему не добавляется.
+      </p>
+    </div>
+
     <p id="footer-note" class="hint small" hidden></p>
 
     <label class="label">Интервал между сообщениями</label>
@@ -98,6 +174,38 @@
 
     <p class="err" id="new-err" hidden></p>
     <button id="campaign-start" class="btn primary">Запустить</button>
+    <button class="btn ghost" data-home>Отмена</button>
+  </section>
+
+  <!-- Правка уже созданной рассылки. Чаты не трогаем: круг идёт, и
+       менять список на ходу — значит писать в одни чаты дважды, а другие
+       пропустить. -->
+  <section id="screen-edit" class="screen" hidden>
+    <h2 class="section-title">Изменить рассылку</h2>
+    <p class="hint" id="edit-about"></p>
+
+    <label class="label" for="edit-title">Название</label>
+    <input id="edit-title" class="field" type="text" maxlength="60">
+
+    <label class="label">Сообщение</label>
+    <div class="tabs">
+      <button class="etab active" data-etab="text">Текст</button>
+      <button class="etab" data-etab="saved">Из «Избранного»</button>
+    </div>
+
+    <div id="etab-text">
+      <textarea id="edit-text" class="field area" rows="5"></textarea>
+      <p id="edit-count" class="hint small"></p>
+    </div>
+    <div id="etab-saved" hidden>
+      <div id="edit-materials" class="picker"></div>
+    </div>
+
+    <label class="label">Интервал</label>
+    <div id="edit-intervals" class="chips"></div>
+
+    <p class="err" id="edit-err" hidden></p>
+    <button id="edit-save" class="btn primary">Сохранить</button>
     <button class="btn ghost" data-home>Отмена</button>
   </section>
 

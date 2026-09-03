@@ -41,7 +41,9 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    INTEGER NOT NULL,
     trial_ends_at INTEGER NOT NULL DEFAULT 0,
     paid_until    INTEGER NOT NULL DEFAULT 0,
-    seen_at       INTEGER NOT NULL DEFAULT 0
+    seen_at       INTEGER NOT NULL DEFAULT 0,
+    -- Внутренняя валюта. Начисляется за оплаты звёздами.
+    coins         INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS accounts (
@@ -114,6 +116,10 @@ CREATE TABLE IF NOT EXISTS campaigns (
     interval    INTEGER NOT NULL,
     source      TEXT    NOT NULL DEFAULT 'chats',
     folder_id   INTEGER,
+    -- text — берём текст из поля text; saved — копируем сообщение из
+    -- «Избранного» аккаунта, вместе с медиа и оформлением.
+    content     TEXT    NOT NULL DEFAULT 'text',
+    saved_id    INTEGER,
     status      TEXT    NOT NULL DEFAULT 'running',
     cursor      INTEGER NOT NULL DEFAULT 0,
     next_run_at INTEGER NOT NULL DEFAULT 0,
@@ -145,6 +151,33 @@ CREATE TABLE IF NOT EXISTS sends (
 );
 CREATE INDEX IF NOT EXISTS idx_sends_campaign ON sends(campaign_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_sends_account  ON sends(account_id, created_at);
+
+-- Оплаты звёздами. Журнал, а не счётчик: по нему видно, за что и когда
+-- продлевали, и он же защищает от повторного зачисления — Telegram
+-- присылает успешный платёж повторно, если бот не ответил вовремя.
+CREATE TABLE IF NOT EXISTS payments (
+    charge_id  TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    stars      INTEGER NOT NULL,
+    days       INTEGER NOT NULL,
+    payload    TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id, created_at);
+
+-- Материалы: сообщения из «Избранного» подключённого аккаунта. Само
+-- сообщение здесь не хранится — только id и то, что нужно показать в
+-- списке. Отправляется оно копированием прямо из «Избранного», и
+-- поэтому переживает всё: премиум-эмодзи, стикеры, цитаты, альбомы.
+CREATE TABLE IF NOT EXISTS materials (
+    account_id INTEGER NOT NULL,
+    msg_id     INTEGER NOT NULL,
+    kind       TEXT    NOT NULL,
+    preview    TEXT,
+    has_media  INTEGER NOT NULL DEFAULT 0,
+    scanned_at INTEGER NOT NULL,
+    PRIMARY KEY (account_id, msg_id)
+);
 
 -- Паузы аккаунтов по FloodWait. В базе, а не в памяти: Telegram выдаёт
 -- их на часы, а передеплой за это время случается не раз — счётчик в
@@ -194,6 +227,17 @@ async def _migrate() -> None:
         "accounts",
         "source",
         "ALTER TABLE accounts ADD COLUMN source TEXT NOT NULL DEFAULT 'phone'",
+    )
+    await _ensure_column(
+        "users", "coins", "ALTER TABLE users ADD COLUMN coins INTEGER NOT NULL DEFAULT 0"
+    )
+    await _ensure_column(
+        "campaigns",
+        "content",
+        "ALTER TABLE campaigns ADD COLUMN content TEXT NOT NULL DEFAULT 'text'",
+    )
+    await _ensure_column(
+        "campaigns", "saved_id", "ALTER TABLE campaigns ADD COLUMN saved_id INTEGER"
     )
 
 
@@ -310,6 +354,56 @@ async def grant_paid(user_id: int, days: int) -> int:
     )
     await _conn().commit()
     return until
+
+
+async def profile(user_id: int) -> dict:
+    """Профиль: монеты и сводка по рассылкам этого человека."""
+    row = await _fetchone(
+        """
+        SELECT
+            (SELECT coins FROM users WHERE user_id = ?) AS coins,
+            (SELECT created_at FROM users WHERE user_id = ?) AS since,
+            (SELECT COUNT(*) FROM accounts WHERE user_id = ?) AS accounts,
+            (SELECT COUNT(*) FROM campaigns WHERE user_id = ?) AS campaigns,
+            (SELECT COALESCE(SUM(sent_ok), 0) FROM campaigns
+                 WHERE user_id = ?) AS sent,
+            (SELECT COALESCE(SUM(stars), 0) FROM payments
+                 WHERE user_id = ?) AS stars
+        """,
+        (user_id,) * 6,
+    )
+    return {key: int(row[key] or 0) for key in row.keys()} if row else {}
+
+
+async def add_coins(user_id: int, coins: int) -> int:
+    await _conn().execute(
+        "UPDATE users SET coins = coins + ? WHERE user_id = ?", (coins, user_id)
+    )
+    await _conn().commit()
+    row = await _fetchone("SELECT coins FROM users WHERE user_id = ?", (user_id,))
+    return int(row["coins"]) if row else 0
+
+
+async def record_payment(
+    charge_id: str, user_id: int, stars: int, days: int, payload: str
+) -> bool:
+    """Записать оплату. False — такую уже записывали.
+
+    Защита от двойного зачисления: Telegram присылает успешный платёж
+    повторно, если бот не ответил вовремя, и без этой проверки один
+    платёж продлевал бы подписку дважды.
+    """
+    try:
+        await _conn().execute(
+            "INSERT INTO payments (charge_id, user_id, stars, days, payload, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (charge_id, user_id, stars, days, payload, int(time.time())),
+        )
+    except aiosqlite.IntegrityError:
+        log.info("платёж %s уже зачтён", charge_id)
+        return False
+    await _conn().commit()
+    return True
 
 
 # --- аккаунты ---------------------------------------------------------
@@ -644,6 +738,10 @@ class Campaign:
     interval: int
     source: str
     folder_id: int | None
+    #: text — писать текстом из поля text; saved — копировать сообщение
+    #: из «Избранного» аккаунта вместе с медиа и оформлением.
+    content: str
+    saved_id: int | None
     status: str
     cursor: int
     next_run_at: int
@@ -664,6 +762,8 @@ def _campaign(row: aiosqlite.Row) -> Campaign:
         interval=row["interval"],
         source=row["source"],
         folder_id=row["folder_id"],
+        content=(row["content"] if "content" in row.keys() else None) or "text",
+        saved_id=row["saved_id"] if "saved_id" in row.keys() else None,
         status=row["status"],
         cursor=row["cursor"],
         next_run_at=row["next_run_at"],
@@ -686,16 +786,19 @@ async def create_campaign(
     folder_id: int | None,
     chat_ids: list[int],
     start_at: int,
+    content: str = "text",
+    saved_id: int | None = None,
 ) -> int:
     now = int(time.time())
     cursor = await _conn().execute(
         """
         INSERT INTO campaigns (user_id, account_id, title, text, interval,
-                               source, folder_id, status, next_run_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
+                               source, folder_id, content, saved_id,
+                               status, next_run_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
         """,
         (user_id, account_id, title, text, interval, source, folder_id,
-         start_at, now),
+         content, saved_id, start_at, now),
     )
     campaign_id = cursor.lastrowid
     # Порядок чатов фиксируется здесь и дальше не меняется: «по очереди»
@@ -783,6 +886,34 @@ async def advance_campaign(
     await _conn().commit()
 
 
+async def edit_campaign(
+    user_id: int,
+    campaign_id: int,
+    *,
+    title: str,
+    text: str,
+    interval: int,
+    content: str,
+    saved_id: int | None,
+) -> bool:
+    """Поменять текст, материал, интервал и название.
+
+    Круг и счётчики не сбрасываются намеренно: поправить опечатку в
+    тексте — не повод начинать обход чатов заново и писать в те, куда
+    уже написали.
+    """
+    cursor = await _conn().execute(
+        """
+        UPDATE campaigns
+           SET title = ?, text = ?, interval = ?, content = ?, saved_id = ?
+         WHERE id = ? AND user_id = ?
+        """,
+        (title, text, interval, content, saved_id, campaign_id, user_id),
+    )
+    await _conn().commit()
+    return cursor.rowcount > 0
+
+
 async def delete_campaign(user_id: int, campaign_id: int) -> bool:
     cursor = await _conn().execute(
         "DELETE FROM campaigns WHERE id = ? AND user_id = ?", (campaign_id, user_id)
@@ -807,6 +938,62 @@ async def stop_account_campaigns(account_id: int, note: str) -> int:
     )
     await _conn().commit()
     return cursor.rowcount
+
+
+# --- материалы из «Избранного» ----------------------------------------
+
+
+async def save_materials(account_id: int, rows: list[dict]) -> int:
+    """Переписать список материалов аккаунта.
+
+    Переписать, а не дописать: сообщение могли удалить из «Избранного»,
+    и висеть в списке оно не должно — отправка по нему всё равно
+    провалится.
+    """
+    now = int(time.time())
+    await _conn().execute("BEGIN")
+    try:
+        await _conn().execute(
+            "DELETE FROM materials WHERE account_id = ?", (account_id,)
+        )
+        await _conn().executemany(
+            """
+            INSERT INTO materials (account_id, msg_id, kind, preview,
+                                   has_media, scanned_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (account_id, row["msg_id"], row["kind"], row.get("preview"),
+                 1 if row.get("has_media") else 0, now)
+                for row in rows
+            ],
+        )
+    except Exception:
+        await _conn().rollback()
+        raise
+    await _conn().commit()
+    return len(rows)
+
+
+async def materials(account_id: int) -> list[dict]:
+    rows = await _fetchall(
+        "SELECT * FROM materials WHERE account_id = ? ORDER BY msg_id DESC",
+        (account_id,),
+    )
+    return [
+        {
+            "msg_id": row["msg_id"],
+            "kind": row["kind"],
+            "preview": row["preview"],
+            "has_media": bool(row["has_media"]),
+        }
+        for row in rows
+    ]
+
+
+async def material(account_id: int, msg_id: int) -> dict | None:
+    found = [m for m in await materials(account_id) if m["msg_id"] == msg_id]
+    return found[0] if found else None
 
 
 # --- журнал отправок и лимиты -----------------------------------------

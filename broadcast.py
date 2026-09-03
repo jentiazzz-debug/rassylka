@@ -166,10 +166,17 @@ def _input_peer(chat: db.Chat):
 
 
 async def compose(user_id: int, text: str) -> str:
-    """Текст сообщения с подписью бесплатного тарифа, если он бесплатный."""
+    """Текст сообщения с подписью бесплатного тарифа, если он бесплатный.
+
+    Подпись дописывается в конец, а не в начало: у сообщения с медиа
+    смещения оформления считаются от начала подписи, и вставка спереди
+    сдвинула бы все жирные куски и премиум-эмодзи на длину подписи.
+    """
     subscription = await db.subscription(user_id)
     if subscription.paid or not config.FREE_FOOTER:
         return text
+    if not text.strip():
+        return config.FREE_FOOTER
     return f"{text}\n\n{config.FREE_FOOTER}"
 
 
@@ -182,6 +189,65 @@ def _delay(interval: int) -> int:
     base = max(config.MIN_INTERVAL, interval)
     spread = base * max(0.0, config.INTERVAL_JITTER)
     return max(config.MIN_INTERVAL, int(base + random.uniform(-spread, spread)))
+
+
+class MaterialGone(Exception):
+    """Сообщение-материал пропало из «Избранного»."""
+
+
+async def _deliver(client, campaign: db.Campaign, peer) -> None:
+    """Отправить в чат то, что задано рассылкой.
+
+    Материал — это сообщение из «Избранного» аккаунта, и отправляется он
+    копированием оттуда. Так переживает всё, что человек в него положил:
+    премиум-эмодзи и стикеры, цитаты, жирный с курсивом, фото, гифки,
+    видео. Разбирать и пересобирать это вручную бессмысленно — половина
+    сущностей всё равно потерялась бы.
+
+    Сообщение перечитывается перед каждой отправкой. Не из
+    расточительности: у файлов есть file_reference, он живёт считанные
+    часы, и сохранённая ссылка на медиа через сутки перестаёт работать.
+    Свежее чтение выдаёт свежую ссылку.
+    """
+    if campaign.content != "saved" or not campaign.saved_id:
+        # parse_mode=None намеренно: текст пишут в обычное поле, и
+        # звёздочки с подчёркиваниями в нём должны остаться собой, а не
+        # превратиться в разметку или сломать отправку.
+        text = await compose(campaign.user_id, campaign.text)
+        await client.send_message(peer, text, parse_mode=None)
+        return
+
+    source = await client.get_messages("me", ids=campaign.saved_id)
+    if source is None:
+        raise MaterialGone()
+
+    if getattr(source, "sticker", None) is not None:
+        # У стикера подписи не бывает — Telegram её не примет. Значит, и
+        # подпись бесплатного тарифа к нему не пристаёт: рассылка одними
+        # стикерами уходит без неё.
+        await client.send_file(peer, source.media)
+        return
+
+    caption = await compose(campaign.user_id, source.message or "")
+    if source.media is not None:
+        # Медиа переотправляется тем же объектом, без скачивания и
+        # повторной загрузки: файл уже лежит у Telegram, и аккаунт имеет
+        # к нему доступ — он же его туда и положил.
+        await client.send_file(
+            peer,
+            source.media,
+            caption=caption or None,
+            formatting_entities=source.entities or None,
+            parse_mode=None,
+        )
+        return
+
+    await client.send_message(
+        peer,
+        caption,
+        formatting_entities=source.entities or None,
+        parse_mode=None,
+    )
 
 
 async def _targets(campaign: db.Campaign) -> list[int]:
@@ -279,16 +345,10 @@ async def run_one(bot, campaign: db.Campaign) -> None:
         return
     chat = found[0]
 
-    text = await compose(campaign.user_id, campaign.text)
     live = await _live(account)
     try:
         async with live.lock:
-            # parse_mode=None намеренно: текст пишут в обычное поле, и
-            # звёздочки с подчёркиваниями в нём должны остаться собой, а
-            # не превратиться в разметку или сломать отправку.
-            await live.client.send_message(
-                _input_peer(chat), text, parse_mode=None
-            )
+            await _deliver(live.client, campaign, _input_peer(chat))
     except Exception as error:
         await _handle_error(bot, campaign, account, chat, error, len(targets))
         return
@@ -309,6 +369,19 @@ async def _handle_error(
     error: Exception,
     total: int,
 ) -> None:
+    if isinstance(error, MaterialGone):
+        # Материал удалили из «Избранного». Круг продолжать нельзя: он
+        # будет спотыкаться на каждом чате и копить ошибки.
+        await db.log_send(
+            campaign.id, account.id, chat.chat_id, chat.title, False,
+            "материал удалён из «Избранного»",
+        )
+        await db.set_campaign_status(
+            campaign.id, "paused", "материал удалён из «Избранного»"
+        )
+        await _notify(bot, campaign.user_id, texts.material_gone(campaign))
+        return
+
     action, reason, seconds = classify(error)
     now = int(time.time())
     await db.log_send(

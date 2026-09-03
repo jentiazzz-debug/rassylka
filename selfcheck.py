@@ -48,6 +48,7 @@ import crypto  # noqa: E402
 import db  # noqa: E402
 import handlers  # noqa: E402
 import keyboards  # noqa: E402
+import payments  # noqa: E402
 import tdata  # noqa: E402
 import texts  # noqa: E402
 import webapp  # noqa: E402
@@ -317,6 +318,10 @@ async def check_api() -> None:
             "/api/account/verify",
             "/api/account/forget",
             "/api/account/tdata",
+            "/api/profile",
+            "/api/invoice",
+            "/api/materials",
+            "/api/campaign/edit",
         ):
             answer = await client.post(path, json={"phone": "+79990000000", "id": 1})
             check(f"{path} без подписи: отказ", answer.status == 401)
@@ -819,6 +824,130 @@ async def check_account_api() -> None:
     await db.delete_account(USER, phone_id)
 
 
+async def check_payments() -> None:
+    print("\nОплата звёздами")
+    check("тарифы разобрались", len(config.PLANS) == 3, str(config.PLANS))
+    check("день — 30 звёзд", payments.plan_by_days(1)["stars"] == 30)
+    check("неделя — 100 звёзд", payments.plan_by_days(7)["stars"] == 100)
+    check("месяц — 200 звёзд", payments.plan_by_days(30)["stars"] == 200)
+    check("чужого тарифа нет", payments.plan_by_days(3) is None)
+
+    check("payload читается", payments.days_from(payments.payload_for(7)) == 7)
+    for junk in ("", "sub", "sub:", "sub:abc", "other:7", "7"):
+        check(f"мусорный payload {junk!r} отбивается",
+              payments.days_from(junk) == 0)
+
+    before = await db.subscription(USER)
+    fresh = await db.record_payment("charge-1", USER, 100, 7, "sub:7")
+    check("платёж записался", fresh)
+    await db.grant_paid(USER, 7)
+    after = await db.subscription(USER)
+    check("подписка продлилась", after.until > before.until)
+    check("тариф стал платным", after.paid, after.kind)
+
+    # Telegram присылает успешный платёж повторно, если бот не ответил
+    # вовремя. Второй раз зачислять нельзя.
+    again = await db.record_payment("charge-1", USER, 100, 7, "sub:7")
+    check("тот же платёж дважды не зачтётся", not again)
+
+    coins = await db.add_coins(USER, 100 * config.COINS_PER_STAR)
+    check("монеты начислились", coins == 100, str(coins))
+    profile = await db.profile(USER)
+    check("монеты видны в профиле", profile["coins"] == 100, str(profile))
+    check("звёзды посчитаны", profile["stars"] == 100, str(profile))
+
+    # Возвращаем триал: дальше он нужен живым.
+    await db._conn().execute(
+        "UPDATE users SET paid_until = 0, trial_ends_at = ? WHERE user_id = ?",
+        (int(time.time()) + 86400, USER),
+    )
+    await db._conn().commit()
+
+
+async def check_materials() -> None:
+    print("\nМатериалы из «Избранного»")
+    account_id = await db.save_account(
+        USER, "+79990000300", crypto.encrypt("s"), tg_id=11,
+        name="С материалами", username=None,
+    )
+    await db.save_materials(account_id, [
+        {"msg_id": 10, "kind": "photo", "preview": "Фото", "has_media": True},
+        {"msg_id": 11, "kind": "text", "preview": "Привет", "has_media": False},
+        {"msg_id": 12, "kind": "sticker", "preview": "Стикер", "has_media": True},
+    ])
+    found = await db.materials(account_id)
+    check("материалы записались", len(found) == 3, str(len(found)))
+    check("свежие сверху", found[0]["msg_id"] == 12, str(found[0]))
+    check("тип сохраняется", found[0]["kind"] == "sticker")
+    check("материал ищется по id", (await db.material(account_id, 11))["preview"]
+          == "Привет")
+    check("чужого материала нет", await db.material(account_id, 99) is None)
+
+    # Пересканирование заменяет список: сообщение могли удалить.
+    await db.save_materials(account_id, [
+        {"msg_id": 10, "kind": "photo", "preview": "Фото", "has_media": True},
+    ])
+    check("пересканирование чистит пропавшее",
+          len(await db.materials(account_id)) == 1)
+
+    # Рассылка материалом.
+    campaign_id = await db.create_campaign(
+        USER, account_id, title="С фото", text="", interval=0,
+        source="chats", folder_id=None, chat_ids=[-1001],
+        start_at=int(time.time()), content="saved", saved_id=10,
+    )
+    campaign = await db.campaign(USER, campaign_id)
+    check("рассылка помнит материал",
+          campaign.content == "saved" and campaign.saved_id == 10,
+          f"{campaign.content}/{campaign.saved_id}")
+
+    # Правка: текст, интервал, переключение на текст.
+    await db.edit_campaign(
+        USER, campaign_id, title="Уже текстом", text="новый текст",
+        interval=300, content="text", saved_id=None,
+    )
+    edited = await db.campaign(USER, campaign_id)
+    check("текст поменялся", edited.text == "новый текст", edited.text)
+    check("интервал поменялся", edited.interval == 300, str(edited.interval))
+    check("вернулись к тексту", edited.content == "text", edited.content)
+    check("название поменялось", edited.title == "Уже текстом", edited.title)
+
+    # Круг и счётчики правка не сбрасывает: поправить опечатку — не повод
+    # писать заново в те чаты, куда уже написали.
+    await db.advance_campaign(campaign_id, cursor=1, next_run_at=0, cycles=0,
+                              ok=True)
+    await db.edit_campaign(
+        USER, campaign_id, title="Ещё раз", text="другой текст",
+        interval=300, content="text", saved_id=None,
+    )
+    kept = await db.campaign(USER, campaign_id)
+    check("правка не сбрасывает круг", kept.cursor == 1, str(kept.cursor))
+    check("и не сбрасывает счётчики", kept.sent_ok == 1, str(kept.sent_ok))
+
+    check("чужую рассылку не поправить",
+          not await db.edit_campaign(OTHER, campaign_id, title="взлом",
+                                     text="x", interval=300, content="text",
+                                     saved_id=None))
+
+    await db.delete_campaign(USER, campaign_id)
+    await db.delete_account(USER, account_id)
+
+
+async def check_footer_on_media() -> None:
+    print("\nПодпись бесплатного тарифа")
+    config.FREE_FOOTER = "Рассылка бесплатно — @тестбот"
+    # У сообщения с медиа подпись дописывается в конец: смещения
+    # оформления считаются от начала подписи, и вставка спереди сдвинула
+    # бы жирный текст и премиум-эмодзи.
+    text = await broadcast.compose(USER, "текст")
+    check("подпись в конце", text.endswith(config.FREE_FOOTER), text)
+    check("текст не сдвинут", text.startswith("текст"), text)
+    # Пустая подпись у медиа без текста не должна начинаться с пустых строк.
+    empty = await broadcast.compose(USER, "")
+    check("у пустого текста нет лишних переносов",
+          empty == config.FREE_FOOTER, repr(empty))
+
+
 def check_texts() -> None:
     print("\nТексты и кнопки")
     trial = db.Subscription(kind="trial", until=int(time.time()) + 5 * 86400)
@@ -894,6 +1023,9 @@ async def run() -> None:
         await check_folders()
         await check_tdata()
         await check_account_api()
+        await check_payments()
+        await check_materials()
+        await check_footer_on_media()
         await check_api()
         check_texts()
         check_wiring()

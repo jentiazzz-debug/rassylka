@@ -180,6 +180,65 @@ async def _read_folders(client, known: list[dict]) -> list[dict]:
     return out
 
 
+#: Сколько сообщений из «Избранного» показываем как материалы.
+SAVED_LIMIT = 50
+
+
+def _material_kind(message) -> str:
+    """Что это за сообщение — для значка в списке."""
+    if getattr(message, "sticker", None):
+        return "sticker"
+    if getattr(message, "gif", None):
+        return "gif"
+    if getattr(message, "video", None):
+        return "video"
+    if getattr(message, "voice", None) or getattr(message, "audio", None):
+        return "audio"
+    if getattr(message, "photo", None):
+        return "photo"
+    if getattr(message, "document", None):
+        return "document"
+    return "text"
+
+
+def _preview(message, kind: str) -> str:
+    """Короткая подпись для списка материалов."""
+    text = (getattr(message, "message", None) or "").strip()
+    if text:
+        return text[:120]
+    labels = {
+        "sticker": "Стикер",
+        "gif": "Гифка",
+        "video": "Видео",
+        "audio": "Аудио",
+        "photo": "Фото",
+        "document": "Файл",
+    }
+    return labels.get(kind, "Сообщение")
+
+
+async def _read_saved(client) -> list[dict]:
+    """Последние сообщения из «Избранного» аккаунта."""
+    rows: list[dict] = []
+    async for message in client.iter_messages("me", limit=SAVED_LIMIT):
+        # Служебные сообщения (кто-то вошёл, чат создан) материалом быть
+        # не могут: у них нет ни текста, ни вложения.
+        if getattr(message, "action", None) is not None:
+            continue
+        kind = _material_kind(message)
+        if kind == "text" and not (message.message or "").strip():
+            continue
+        rows.append(
+            {
+                "msg_id": message.id,
+                "kind": kind,
+                "preview": _preview(message, kind),
+                "has_media": getattr(message, "media", None) is not None,
+            }
+        )
+    return rows
+
+
 async def scan(user_id: int, account_id: int) -> dict:
     """Перечитать диалоги и папки аккаунта. Возвращает, что нашлось."""
     account = await db.account(user_id, account_id)
@@ -196,6 +255,9 @@ async def scan(user_id: int, account_id: int) -> dict:
             )
         found = await _read_dialogs(client)
         folders = await _read_folders(client, found)
+        # «Избранное» читается тем же заходом: отдельная кнопка ради
+        # него — лишний поход в Telegram и лишний шаг для человека.
+        saved = await _read_saved(client)
     except accounts.LoginError:
         raise
     except Exception as error:
@@ -222,7 +284,13 @@ async def scan(user_id: int, account_id: int) -> dict:
 
     await db.save_chats(account.id, found)
     await db.save_folders(account.id, folders)
+    await db.save_materials(account.id, saved)
     log.info(
-        "аккаунт %s: чатов %s, папок %s", account_id, len(found), len(folders)
+        "аккаунт %s: чатов %s, папок %s, материалов %s",
+        account_id, len(found), len(folders), len(saved),
     )
-    return {"chats": len(found), "folders": len(folders)}
+    return {
+        "chats": len(found),
+        "folders": len(folders),
+        "materials": len(saved),
+    }

@@ -19,8 +19,12 @@ const $ = (id) => document.getElementById(id);
 
 const SCREENS = [
   'loading', 'main', 'phone', 'code', 'password', 'done', 'tdata', 'new',
-  'log', 'outside',
+  'edit', 'log', 'outside',
 ];
+
+/** Разделы главного экрана. */
+const PANES = ['profile', 'mail', 'accounts'];
+let pane = 'profile';
 
 /** Экраны входа по номеру: с них «назад» отменяет вход на сервере. */
 const LOGIN_SCREENS = ['phone', 'code', 'password'];
@@ -38,6 +42,19 @@ function show(name) {
   if (tg && tg.BackButton) {
     const nested = name !== 'main' && name !== 'loading' && name !== 'outside';
     nested ? tg.BackButton.show() : tg.BackButton.hide();
+  }
+  // Панель разделов — только на главном. На шагах входа и создания
+  // рассылки она увела бы человека из середины заполнения формы.
+  $('tabbar').hidden = name !== 'main';
+  document.body.classList.toggle('with-tabs', name === 'main');
+  window.scrollTo(0, 0);
+}
+
+function setPane(name) {
+  pane = name;
+  for (const item of PANES) $('pane-' + item).hidden = item !== name;
+  for (const button of document.querySelectorAll('.tab-item')) {
+    button.classList.toggle('active', button.dataset.pane === name);
   }
   window.scrollTo(0, 0);
 }
@@ -297,7 +314,11 @@ function campaignCard(campaign) {
 
   const text = document.createElement('div');
   text.className = 'campaign-text';
-  text.textContent = campaign.text;
+  // У рассылки материалом текст в карточке обманчив: уйдёт не он, а
+  // сообщение из «Избранного» — с медиа и оформлением.
+  text.textContent = campaign.content === 'saved'
+    ? '📎 Сообщение из «Избранного» — с медиа и оформлением'
+    : campaign.text;
   row.appendChild(text);
 
   const facts = document.createElement('div');
@@ -340,6 +361,12 @@ function campaignCard(campaign) {
     await refresh();
   };
   actions.appendChild(toggle);
+
+  const change = document.createElement('button');
+  change.className = 'btn small';
+  change.textContent = 'Изменить';
+  change.onclick = () => openEdit(campaign);
+  actions.appendChild(change);
 
   const journal = document.createElement('button');
   journal.className = 'btn small';
@@ -391,11 +418,217 @@ function renderCampaigns() {
   }
 }
 
+// --- профиль -----------------------------------------------------------
+
+/** Профиль приезжает отдельным запросом: аватарка и имя берутся из
+ *  подписанной initData, а не из базы, и обновлять их вместе с
+ *  состоянием рассылок незачем. */
+let me = null;
+
+function renderProfile() {
+  if (!me) return;
+
+  const photo = $('me-photo');
+  const letter = $('me-letter');
+  if (me.photo_url) {
+    photo.src = me.photo_url;
+    photo.hidden = false;
+    letter.hidden = true;
+  } else {
+    // У закрытых профилей Telegram аватарку не отдаёт — рисуем букву.
+    photo.hidden = true;
+    letter.hidden = false;
+    letter.textContent = (me.name || '?').trim().charAt(0).toUpperCase();
+  }
+
+  $('me-name').textContent = me.name + (me.is_premium ? ' ⭐️' : '');
+  $('me-nick').textContent = me.username ? '@' + me.username : 'без ника';
+  $('me-id').textContent = 'ID: ' + me.id;
+
+  $('coins-value').textContent = me.stats.coins || 0;
+  $('coins-label').textContent = me.coin_name + ' — внутренние монеты';
+
+  const stats = $('me-stats');
+  stats.textContent = '';
+  const rows = [
+    ['Аккаунтов', me.stats.accounts || 0],
+    ['Рассылок', me.stats.campaigns || 0],
+    ['Сообщений отправлено', me.stats.sent || 0],
+    ['Звёзд потрачено', me.stats.stars || 0],
+  ];
+  for (const [label, value] of rows) {
+    const row = document.createElement('div');
+    row.className = 'stat-row';
+    const left = document.createElement('span');
+    left.textContent = label;
+    const right = document.createElement('span');
+    right.textContent = value;
+    row.append(left, right);
+    stats.appendChild(row);
+  }
+
+  const support = $('me-support');
+  support.hidden = !state.support_url;
+  if (state.support_url) support.href = state.support_url;
+
+  renderPlans();
+}
+
+function renderPlans() {
+  const box = $('plans');
+  box.textContent = '';
+  for (const plan of me.plans) {
+    const button = document.createElement('button');
+    button.className = 'plan';
+
+    const name = document.createElement('span');
+    name.className = 'plan-name';
+    name.textContent = plan.days >= 30
+      ? 'Месяц'
+      : `${plan.days} ${plural(plan.days, 'день', 'дня', 'дней')}`;
+
+    const perDay = document.createElement('span');
+    perDay.className = 'plan-day';
+    perDay.textContent = plan.days > 1
+      ? `${Math.round(plan.stars / plan.days)} ⭐️/день`
+      : '';
+
+    const price = document.createElement('span');
+    price.className = 'plan-price';
+    price.textContent = plan.stars + ' ⭐️';
+
+    button.append(name, perDay, price);
+    button.onclick = () => buy(plan, button);
+    box.appendChild(button);
+  }
+}
+
+async function buy(plan, button) {
+  const done = busy(button, 'Открываем счёт…');
+  const result = await api('/api/invoice', { days: plan.days });
+  done();
+  if (!result.ok) {
+    alertBox(result.error);
+    return;
+  }
+  if (!tg || !tg.openInvoice) {
+    alertBox('Ваша версия Telegram не умеет открывать счёт. Обновите приложение.');
+    return;
+  }
+  // Ответ openInvoice — это статус в браузере, и подписку по нему никто
+  // не продлевает: настоящее подтверждение приходит боту от Telegram
+  // отдельным апдейтом. Здесь только показываем, что произошло, и
+  // перечитываем состояние.
+  tg.openInvoice(result.link, async (status) => {
+    if (status === 'paid') {
+      haptic('success');
+      // Платёж доезжает до бота не мгновенно — даём ему секунду.
+      setTimeout(refresh, 1200);
+    } else if (status === 'failed') {
+      alertBox('Оплата не прошла.');
+    }
+  });
+}
+
 function renderMain() {
   renderSubscription();
   renderAccounts();
   renderCampaigns();
+  renderProfile();
+  setPane(pane);
   show('main');
+}
+
+// --- правка рассылки ---------------------------------------------------
+
+/** Что правим. Чаты сюда не входят: круг идёт, и менять список на ходу
+ *  значит написать в одни чаты дважды, а другие пропустить. */
+let editing = null;
+
+async function openEdit(campaign) {
+  editing = {
+    id: campaign.id,
+    accountId: campaign.account_id,
+    content: campaign.content || 'text',
+    savedId: campaign.saved_id,
+    interval: campaign.interval,
+  };
+  fail('edit-err', '');
+  $('edit-about').textContent =
+    `${campaign.chats} ${plural(campaign.chats, 'чат', 'чата', 'чатов')} · ` +
+    'список чатов не меняется — круг уже идёт';
+  $('edit-title').value = campaign.title;
+  $('edit-text').value = campaign.text || '';
+  $('edit-count').textContent =
+    `${(campaign.text || '').length} из ${state.limits.max_text}`;
+  setEditTab(editing.content);
+  renderEditIntervals();
+  show('edit');
+
+  hintInto($('edit-materials'), 'Загружаем…');
+  await loadMaterials(editing.accountId);
+  renderMaterials($('edit-materials'), editing.savedId, (id) => {
+    editing.savedId = id;
+  });
+}
+
+function setEditTab(name) {
+  if (!editing) return;
+  editing.content = name;
+  for (const tab of document.querySelectorAll('.etab')) {
+    tab.classList.toggle('active', tab.dataset.etab === name);
+  }
+  $('etab-text').hidden = name !== 'text';
+  $('etab-saved').hidden = name !== 'saved';
+}
+
+function renderEditIntervals() {
+  const box = $('edit-intervals');
+  box.textContent = '';
+  const allowed = INTERVALS.filter((s) => s >= state.limits.min_interval);
+  // Свой интервал, выставленный когда-то другими значениями, не теряем:
+  // иначе правка названия молча переставила бы рассылку на другой ритм.
+  if (!allowed.includes(editing.interval)) allowed.unshift(editing.interval);
+  for (const seconds of allowed) {
+    const chip = document.createElement('button');
+    chip.className = 'chip' + (seconds === editing.interval ? ' active' : '');
+    chip.textContent = human(seconds);
+    chip.onclick = () => {
+      editing.interval = seconds;
+      renderEditIntervals();
+    };
+    box.appendChild(chip);
+  }
+}
+
+async function saveEdit() {
+  const button = $('edit-save');
+  fail('edit-err', '');
+  const text = $('edit-text').value.trim();
+  if (editing.content === 'text' && !text) {
+    fail('edit-err', 'Напишите текст сообщения.');
+    return;
+  }
+  if (editing.content === 'saved' && !editing.savedId) {
+    fail('edit-err', 'Выберите сообщение из «Избранного».');
+    return;
+  }
+  const done = busy(button, 'Сохраняем…');
+  const result = await api('/api/campaign/edit', {
+    id: editing.id,
+    title: $('edit-title').value.trim(),
+    text,
+    interval: editing.interval,
+    content: editing.content,
+    saved_id: editing.savedId,
+  });
+  done();
+  if (!result.ok) {
+    fail('edit-err', result.error);
+    return;
+  }
+  haptic('success');
+  await refresh();
 }
 
 // --- журнал отправок ---------------------------------------------------
@@ -449,13 +682,17 @@ async function openLog(campaign) {
 }
 
 async function refresh() {
-  const result = await api('/api/state', {});
+  const [result, profile] = await Promise.all([
+    api('/api/state', {}),
+    api('/api/profile', {}),
+  ]);
   if (!result.ok) {
     show('outside');
     $('screen-outside').querySelector('.hint').textContent = result.error;
     return;
   }
   state = result;
+  if (profile.ok) me = profile;
   login = result.pending || null;
   renderMain();
 }
@@ -532,8 +769,52 @@ const INTERVALS = [60, 300, 900, 1800, 3600, 10800, 21600];
 
 const KINDS = { user: 'личка', group: 'группа', channel: 'канал' };
 
+/** Значок типа материала — по нему список читается с одного взгляда. */
+const MATERIAL_ICONS = {
+  text: '📝', photo: '🖼', video: '🎬', gif: '🎞',
+  sticker: '🎨', audio: '🎧', document: '📎',
+};
+
 let draft = null;
-let picker = { chats: [], folders: [] };
+let picker = { chats: [], folders: [], materials: [] };
+
+/** Общий список материалов: используется и при создании, и при правке. */
+function renderMaterials(box, selectedId, onPick) {
+  box.textContent = '';
+  if (!picker.materials.length) {
+    hintInto(box, 'В «Избранном» этого аккаунта пока пусто. Отправьте туда ' +
+      'сообщение и нажмите «Обновить список чатов».');
+    return;
+  }
+  for (const material of picker.materials) {
+    const row = document.createElement('label');
+    row.className = 'pick';
+
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = box.id;
+    radio.checked = selectedId === material.msg_id;
+    radio.onchange = () => onPick(material.msg_id);
+    row.appendChild(radio);
+
+    const mark = document.createElement('span');
+    mark.className = 'pick-mark';
+    mark.textContent = MATERIAL_ICONS[material.kind] || '📝';
+    row.appendChild(mark);
+
+    const title = document.createElement('span');
+    title.className = 'pick-title';
+    title.textContent = material.preview || 'Сообщение';
+    row.appendChild(title);
+
+    box.appendChild(row);
+  }
+}
+
+async function loadMaterials(accountId) {
+  const result = await api('/api/materials', { account_id: accountId });
+  picker.materials = result.ok ? result.materials : [];
+}
 
 function openNew() {
   const alive = state.accounts.filter((a) => a.status === 'ok');
@@ -545,6 +826,8 @@ function openNew() {
     chatIds: new Set(),
     folderId: null,
     interval: 900,
+    content: 'text',
+    savedId: null,
   };
   $('campaign-text').value = '';
   $('chat-search').value = '';
@@ -568,6 +851,7 @@ function openNew() {
   renderFooterNote();
   countText();
   setTab('chats');
+  setContentTab('text');
   show('new');
   loadChats();
 }
@@ -601,6 +885,19 @@ async function loadChats() {
   picker.folders = result.folders;
   renderChatList();
   renderFolders();
+  await loadMaterials(draft.accountId);
+  renderMaterials($('material-list'), draft.savedId, (id) => {
+    draft.savedId = id;
+  });
+}
+
+function setContentTab(name) {
+  draft.content = name;
+  for (const tab of document.querySelectorAll('.ctab')) {
+    tab.classList.toggle('active', tab.dataset.ctab === name);
+  }
+  $('ctab-text').hidden = name !== 'text';
+  $('ctab-saved').hidden = name !== 'saved';
 }
 
 function renderChatList() {
@@ -751,8 +1048,12 @@ async function createCampaign() {
   fail('new-err', '');
 
   const text = $('campaign-text').value.trim();
-  if (!text) {
+  if (draft.content === 'text' && !text) {
     fail('new-err', 'Напишите текст сообщения.');
+    return;
+  }
+  if (draft.content === 'saved' && !draft.savedId) {
+    fail('new-err', 'Выберите сообщение из «Избранного».');
     return;
   }
   if (draft.source === 'chats' && !draft.chatIds.size) {
@@ -772,6 +1073,8 @@ async function createCampaign() {
     source: draft.source,
     folder_id: draft.folderId,
     chat_ids: [...draft.chatIds],
+    content: draft.content,
+    saved_id: draft.savedId,
   });
   done();
   if (!result.ok) {
@@ -956,11 +1259,26 @@ function wire() {
     // здесь не просто лишнее, оно относится к чужому списку.
     draft.chatIds.clear();
     draft.folderId = null;
+    draft.savedId = null;
     loadChats();
   });
   for (const tab of document.querySelectorAll('.tab')) {
     tab.onclick = () => setTab(tab.dataset.tab);
   }
+  for (const tab of document.querySelectorAll('.ctab')) {
+    tab.onclick = () => setContentTab(tab.dataset.ctab);
+  }
+  for (const tab of document.querySelectorAll('.etab')) {
+    tab.onclick = () => setEditTab(tab.dataset.etab);
+  }
+  for (const item of document.querySelectorAll('.tab-item')) {
+    item.onclick = () => setPane(item.dataset.pane);
+  }
+  $('edit-save').onclick = saveEdit;
+  $('edit-text').addEventListener('input', () => {
+    $('edit-count').textContent =
+      `${$('edit-text').value.length} из ${state.limits.max_text}`;
+  });
 
   // Enter на телефонной клавиатуре — самый естественный способ
   // отправить короткое поле, и без этого человек ищет кнопку глазами.

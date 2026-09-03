@@ -32,9 +32,20 @@ import broadcast
 import chats
 import config
 import db
+import payments
 import tdata
 
 log = logging.getLogger("rassylka.webapp")
+
+#: Бот. Нужен только для счетов на оплату: ссылку на счёт выписывает
+#: он, а не веб-сервер. Ставится из main.py при запуске.
+_bot = None
+
+
+def use_bot(bot) -> None:
+    global _bot
+    _bot = bot
+
 
 #: Заголовок, в котором мини-апп присылает initData. Тело запроса тоже
 #: читается — на случай, если заголовок срежет прокси хостинга.
@@ -167,6 +178,8 @@ async def _campaign_view(campaign: db.Campaign) -> dict:
         "interval": campaign.interval,
         "source": campaign.source,
         "folder_id": campaign.folder_id,
+        "content": campaign.content,
+        "saved_id": campaign.saved_id,
         "status": campaign.status,
         "chats": len(targets),
         "next_run_at": campaign.next_run_at,
@@ -321,6 +334,67 @@ async def api_account_forget(
     if not await accounts.forget(int(user["id"]), account_id):
         return _fail("Такого аккаунта нет.")
     return web.json_response({"ok": True})
+
+
+# --- профиль и оплата -------------------------------------------------
+
+
+@authed
+async def api_profile(request: web.Request, user: dict, data: dict) -> web.Response:
+    """Профиль: кто это, монеты, сводка, тарифы."""
+    user_id = int(user["id"])
+    return web.json_response(
+        {
+            "ok": True,
+            # Аватарку и имя берём из подписанной initData, а не из базы:
+            # Telegram отдаёт их вместе с подписью, и они всегда свежие.
+            "photo_url": user.get("photo_url"),
+            "name": " ".join(
+                p for p in (user.get("first_name"), user.get("last_name")) if p
+            ) or "Без имени",
+            "username": user.get("username"),
+            "id": user_id,
+            "is_premium": bool(user.get("is_premium")),
+            "coin_name": config.COIN_NAME,
+            "stats": await db.profile(user_id),
+            "plans": config.PLANS,
+        }
+    )
+
+
+@authed
+async def api_invoice(request: web.Request, user: dict, data: dict) -> web.Response:
+    """Ссылка на счёт: её мини-апп открывает через tg.openInvoice.
+
+    Подписку здесь никто не продлевает. Ответ openInvoice приходит из
+    браузера, и верить ему нельзя — настоящее подтверждение приезжает
+    боту отдельным апдейтом от Telegram (см. payments.py).
+    """
+    if _bot is None:
+        return _fail("Оплата сейчас недоступна. Напишите в поддержку.")
+    days = _int(data.get("days"))
+    if payments.plan_by_days(days) is None:
+        return _fail("Такого тарифа нет.")
+    try:
+        link = await payments.invoice_link(_bot, days)
+    except Exception as error:
+        log.exception("счёт на %s дней не создался", days)
+        return _fail(f"Счёт не создался: {type(error).__name__}")
+    return web.json_response({"ok": True, "link": link})
+
+
+# --- материалы --------------------------------------------------------
+
+
+@authed
+async def api_materials(request: web.Request, user: dict, data: dict) -> web.Response:
+    """Сообщения из «Избранного» аккаунта — то, что можно рассылать."""
+    account = await db.account(int(user["id"]), _int(data.get("account_id")))
+    if account is None:
+        return _fail("Такого аккаунта нет.")
+    return web.json_response(
+        {"ok": True, "materials": await db.materials(account.id)}
+    )
 
 
 # --- импорт из tdata --------------------------------------------------
@@ -496,8 +570,8 @@ async def api_campaign_create(
         return _fail("Этот аккаунт не в сети — подключите его заново.")
 
     text = str(data.get("text") or "").strip()
-    if not text:
-        return _fail("Напишите текст сообщения.")
+    if not text and data.get("content") != "saved":
+        return _fail("Напишите текст сообщения или выберите материал.")
     if len(text) > config.MAX_TEXT:
         return _fail(f"Слишком длинный текст: максимум {config.MAX_TEXT} символов.")
 
@@ -545,6 +619,8 @@ async def api_campaign_create(
         # Первое сообщение уходит сразу: человек только что нажал
         # «Запустить» и ждёт увидеть результат, а не через час.
         start_at=int(time.time()),
+        content=content,
+        saved_id=saved_id,
     )
     campaign = await db.campaign(user_id, campaign_id)
     return web.json_response(
@@ -575,6 +651,48 @@ async def api_campaign_toggle(
 
     return web.json_response(
         {"ok": True, "campaign": await _campaign_view(await db.campaign(user_id, campaign.id))}
+    )
+
+
+@authed
+async def api_campaign_edit(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    """Поменять текст, материал, интервал и название уже созданной рассылки."""
+    user_id = int(user["id"])
+    campaign = await db.campaign(user_id, _int(data.get("id")))
+    if campaign is None:
+        return _fail("Рассылка не найдена.")
+
+    text = str(data.get("text") or "").strip()
+    content, saved_id = "text", None
+    if data.get("content") == "saved":
+        saved_id = _int(data.get("saved_id"))
+        if not await db.material(campaign.account_id, saved_id):
+            return _fail("Материал не найден — обновите список чатов.")
+        content = "saved"
+    elif not text:
+        return _fail("Напишите текст сообщения или выберите материал.")
+
+    if len(text) > config.MAX_TEXT:
+        return _fail(f"Слишком длинный текст: максимум {config.MAX_TEXT} символов.")
+
+    interval = _int(data.get("interval")) or campaign.interval
+    if interval < config.MIN_INTERVAL:
+        return _fail(
+            f"Интервал меньше {config.MIN_INTERVAL // 60 or 1} мин — так "
+            "Telegram ограничит аккаунт."
+        )
+
+    title = str(data.get("title") or "").strip()[:60] or campaign.title
+    await db.edit_campaign(
+        user_id, campaign.id,
+        title=title, text=text, interval=interval,
+        content=content, saved_id=saved_id,
+    )
+    return web.json_response(
+        {"ok": True, "campaign": await _campaign_view(
+            await db.campaign(user_id, campaign.id))}
     )
 
 
@@ -678,9 +796,13 @@ def build() -> web.Application:
             web.post("/api/account/verify", api_account_verify),
             web.post("/api/account/forget", api_account_forget),
             web.post("/api/account/tdata", api_account_tdata),
+            web.post("/api/profile", api_profile),
+            web.post("/api/invoice", api_invoice),
+            web.post("/api/materials", api_materials),
             web.post("/api/chats", api_chats),
             web.post("/api/chats/scan", api_chats_scan),
             web.post("/api/campaign/create", api_campaign_create),
+            web.post("/api/campaign/edit", api_campaign_edit),
             web.post("/api/campaign/toggle", api_campaign_toggle),
             web.post("/api/campaign/delete", api_campaign_delete),
             web.post("/api/campaign/log", api_campaign_log),
