@@ -42,6 +42,8 @@ config.TRIAL_DAYS = 5
 config.MAX_ACCOUNTS = 2
 
 import accounts  # noqa: E402  — только после подмены путей
+import broadcast  # noqa: E402
+import chats  # noqa: E402
 import crypto  # noqa: E402
 import db  # noqa: E402
 import handlers  # noqa: E402
@@ -380,6 +382,290 @@ async def check_api() -> None:
         await client.close()
 
 
+# --- рассылка ---------------------------------------------------------
+
+
+class FakeClient:
+    """Клиент, который никуда не ходит и запоминает отправленное.
+
+    Ради него весь движок и проверяется целиком: круг по чатам, паузы,
+    лимиты и разбор ошибок — это ровно та логика, которую нельзя
+    проверить глазами и нельзя гонять на живом Telegram.
+    """
+
+    def __init__(self) -> None:
+        self.sent: list[tuple] = []
+        self.fail: Exception | None = None
+
+    def is_connected(self) -> bool:
+        return True
+
+    async def send_message(self, peer, text, parse_mode=None):
+        if self.fail is not None:
+            error, self.fail = self.fail, None
+            raise error
+        self.sent.append((peer, text))
+
+    async def disconnect(self) -> None:
+        pass
+
+
+FAKE = FakeClient()
+
+
+async def _fake_live(account):
+    return broadcast._Live(client=FAKE, used_at=0.0)
+
+
+async def _make_campaign(account_id: int, chat_ids: list[int],
+                         interval: int = 0) -> db.Campaign:
+    campaign_id = await db.create_campaign(
+        USER, account_id,
+        title="Тест", text="привет", interval=interval,
+        source="chats", folder_id=None, chat_ids=chat_ids,
+        start_at=int(time.time()) - 1,
+    )
+    return await db.campaign(USER, campaign_id)
+
+
+async def check_broadcast() -> None:
+    print("\nДвижок рассылки")
+
+    # Тормоза на время проверки снимаем: они проверяются отдельно, а
+    # здесь мешают прогнать круг за один заход.
+    config.MIN_INTERVAL = 0
+    config.ACCOUNT_MIN_GAP = 0
+    config.INTERVAL_JITTER = 0
+    config.FREE_FOOTER = "Рассылка бесплатно — @тестбот"
+    broadcast._live = _fake_live
+
+    account_id = await db.save_account(
+        USER, "+79990000100", crypto.encrypt("s"), tg_id=7,
+        name="Отправитель", username="sender",
+    )
+    await db.save_chats(account_id, [
+        {"chat_id": -1001, "raw_id": 1, "access_hash": 11, "kind": "channel",
+         "broadcast": False, "title": "Первый чат", "username": None},
+        {"chat_id": -1002, "raw_id": 2, "access_hash": 22, "kind": "channel",
+         "broadcast": False, "title": "Второй чат", "username": None},
+        {"chat_id": 3003, "raw_id": 3, "access_hash": 33, "kind": "user",
+         "broadcast": False, "title": "Человек", "username": "man"},
+    ])
+    check("чаты записались", len(await db.chats(account_id)) == 3)
+
+    # Повторное сканирование заменяет список, а не дописывает.
+    await db.save_chats(account_id, [
+        {"chat_id": -1001, "raw_id": 1, "access_hash": 11, "kind": "channel",
+         "broadcast": False, "title": "Первый чат", "username": None},
+        {"chat_id": -1002, "raw_id": 2, "access_hash": 22, "kind": "channel",
+         "broadcast": False, "title": "Второй чат", "username": None},
+        {"chat_id": 3003, "raw_id": 3, "access_hash": 33, "kind": "user",
+         "broadcast": False, "title": "Человек", "username": "man"},
+    ])
+    check("пересканирование не плодит чаты",
+          len(await db.chats(account_id)) == 3)
+
+    targets = [-1001, -1002, 3003]
+    campaign = await _make_campaign(account_id, targets)
+
+    # Главное: круг идёт по очереди и заворачивается на начало.
+    FAKE.sent.clear()
+    order = []
+    for _ in range(4):
+        fresh = await db.campaign(USER, campaign.id)
+        order.append(targets[fresh.cursor % len(targets)])
+        await broadcast.run_one(None, fresh)
+
+    check(f"пишет по очереди: {order}", order == [-1001, -1002, 3003, -1001],
+          str(order))
+    check("ушло четыре сообщения", len(FAKE.sent) == 4, str(len(FAKE.sent)))
+
+    after = await db.campaign(USER, campaign.id)
+    check("круг засчитан", after.cycles == 1, str(after.cycles))
+    check("счётчик удачных сходится", after.sent_ok == 4, str(after.sent_ok))
+
+    # Подпись бесплатного тарифа.
+    check("на бесплатном дописывается подпись",
+          FAKE.sent[0][1].endswith(config.FREE_FOOTER), FAKE.sent[0][1])
+    check("сам текст на месте", FAKE.sent[0][1].startswith("привет"))
+
+    await db.grant_paid(USER, 30)
+    paid_text = await broadcast.compose(USER, "привет")
+    check("на платном подписи нет", paid_text == "привет", paid_text)
+    await db._conn().execute(
+        "UPDATE users SET paid_until = 0 WHERE user_id = ?", (USER,)
+    )
+    await db._conn().commit()
+
+    # Адресат собирается из базы, без обращения к Telegram.
+    peer = broadcast._input_peer((await db.chats_by_ids(account_id, [-1001]))[0])
+    check("канал уходит как InputPeerChannel",
+          type(peer).__name__ == "InputPeerChannel", type(peer).__name__)
+    check("и с сохранённым access_hash", peer.access_hash == 11)
+    human = broadcast._input_peer((await db.chats_by_ids(account_id, [3003]))[0])
+    check("личка уходит как InputPeerUser",
+          type(human).__name__ == "InputPeerUser", type(human).__name__)
+
+    await db.delete_campaign(USER, campaign.id)
+
+
+async def check_broadcast_errors() -> None:
+    print("\nОшибки Telegram при отправке")
+
+    account_id = (await db.accounts(USER))[0].id
+    targets = [-1001, -1002, 3003]
+
+    class ChatWriteForbiddenError(Exception):
+        pass
+
+    class FloodWaitError(Exception):
+        def __init__(self):
+            self.seconds = 300
+
+    class PeerFloodError(Exception):
+        pass
+
+    class AuthKeyUnregisteredError(Exception):
+        pass
+
+    action, _, _ = broadcast.classify(ChatWriteForbiddenError())
+    check("нельзя писать в чат — пропускаем чат", action == "skip", action)
+    action, _, seconds = broadcast.classify(FloodWaitError())
+    check("FloodWait — пауза аккаунта", action == "flood" and seconds == 300,
+          f"{action}/{seconds}")
+    action, _, _ = broadcast.classify(PeerFloodError())
+    check("PeerFlood — остановка", action == "peerflood", action)
+    action, _, _ = broadcast.classify(AuthKeyUnregisteredError())
+    check("отозванная сессия — аккаунт мёртв", action == "dead", action)
+
+    # Чат, в который нельзя писать, не должен ронять рассылку: круг
+    # обязан ехать дальше, а не встать на этом чате навсегда.
+    campaign = await _make_campaign(account_id, targets)
+    FAKE.fail = ChatWriteForbiddenError()
+    await broadcast.run_one(None, campaign)
+    after = await db.campaign(USER, campaign.id)
+    check("после отказа круг едет дальше", after.cursor == 1, str(after.cursor))
+    check("ошибка посчитана", after.sent_err == 1, str(after.sent_err))
+    journal = await db.sends(campaign.id)
+    check("причина попала в журнал",
+          journal and journal[0]["error"] == "нельзя писать в этот чат",
+          str(journal[:1]))
+
+    # FloodWait обязан молчать аккаунтом, а не одной рассылкой.
+    FAKE.fail = FloodWaitError()
+    await broadcast.run_one(None, await db.campaign(USER, campaign.id))
+    pause = await db.account_pause(account_id)
+    check("FloodWait поставил аккаунт на паузу", pause is not None)
+    check("пауза примерно на 300 с",
+          pause and 250 < pause[0] - int(time.time()) <= 300, str(pause))
+
+    # Пока аккаунт на паузе, рассылка не отправляет ничего.
+    before = len(FAKE.sent)
+    await broadcast.run_one(None, await db.campaign(USER, campaign.id))
+    check("на паузе аккаунт молчит", len(FAKE.sent) == before)
+
+    await db._conn().execute("DELETE FROM account_pauses")
+    await db._conn().commit()
+
+    # PeerFlood останавливает все рассылки аккаунта.
+    FAKE.fail = PeerFloodError()
+    await broadcast.run_one(None, await db.campaign(USER, campaign.id))
+    stopped = await db.campaign(USER, campaign.id)
+    check("PeerFlood остановил рассылку", stopped.status == "stopped",
+          stopped.status)
+    await db._conn().execute("DELETE FROM account_pauses")
+    await db._conn().commit()
+    await db.delete_campaign(USER, campaign.id)
+
+
+async def check_broadcast_limits() -> None:
+    print("\nЛимиты рассылки")
+
+    account_id = (await db.accounts(USER))[0].id
+    campaign = await _make_campaign(account_id, [-1001, -1002])
+
+    # Разрыв между сообщениями аккаунта. Нужна предыстория: первому
+    # сообщению ждать нечего, разрыв считается от предыдущего — и
+    # проверять надо именно это, а не пустой журнал.
+    await db.log_send(campaign.id, account_id, -1001, "Первый чат", True, None)
+    config.ACCOUNT_MIN_GAP = 3600
+    before = len(FAKE.sent)
+    await broadcast.run_one(None, await db.campaign(USER, campaign.id))
+    check("разрыв между сообщениями соблюдается", len(FAKE.sent) == before)
+    moved = await db.campaign(USER, campaign.id)
+    check("отправка перенесена вперёд", moved.next_run_at > int(time.time()))
+    config.ACCOUNT_MIN_GAP = 0
+
+    # Дневной лимит.
+    config.DAILY_LIMIT = 1
+    await db.reschedule_campaign(campaign.id, int(time.time()) - 1)
+    before = len(FAKE.sent)
+    await broadcast.run_one(None, await db.campaign(USER, campaign.id))
+    check("дневной лимит держит", len(FAKE.sent) == before)
+    noted = await db.campaign(USER, campaign.id)
+    check("причина видна человеку", noted.note == texts.NOTE_DAILY, str(noted.note))
+    config.DAILY_LIMIT = 200
+
+    # Кончившаяся подписка ставит рассылку на паузу.
+    await db._conn().execute(
+        "UPDATE users SET trial_ends_at = ?, paid_until = 0 WHERE user_id = ?",
+        (int(time.time()) - 10, USER),
+    )
+    await db._conn().commit()
+    await db.set_campaign_status(campaign.id, "running", None)
+    await db.reschedule_campaign(campaign.id, int(time.time()) - 1)
+    await broadcast.run_one(None, await db.campaign(USER, campaign.id))
+    expired = await db.campaign(USER, campaign.id)
+    check("без подписки рассылка встаёт", expired.status == "paused",
+          expired.status)
+    await db._conn().execute(
+        "UPDATE users SET trial_ends_at = ? WHERE user_id = ?",
+        (int(time.time()) + 86400, USER),
+    )
+    await db._conn().commit()
+
+    # Минимальный интервал не обойти: даже нулевой поднимается до планки.
+    config.MIN_INTERVAL = 60
+    check("интервал меньше минимума поднимается",
+          broadcast._delay(1) >= 60, str(broadcast._delay(1)))
+    check("заданный интервал сохраняется",
+          540 <= broadcast._delay(600) <= 660, str(broadcast._delay(600)))
+
+    await db.delete_campaign(USER, campaign.id)
+
+
+async def check_folders() -> None:
+    print("\nПапки")
+    account_id = (await db.accounts(USER))[0].id
+    await db.save_folders(account_id, [
+        {"folder_id": 2, "title": "Работа", "chat_ids": [-1001, 3003]},
+        {"folder_id": 3, "title": "Пусто", "chat_ids": []},
+    ])
+    found = await db.folders(account_id)
+    check("папки читаются", len(found) == 2, str(len(found)))
+    work = await db.folder(account_id, 2)
+    check("состав папки на месте", work.chat_ids == [-1001, 3003],
+          str(work.chat_ids))
+
+    # Рассылка по папке берёт состав заново при каждой отправке: чат,
+    # добавленный в папку позже, должен попасть в круг сам.
+    campaign_id = await db.create_campaign(
+        USER, account_id, title="По папке", text="привет", interval=0,
+        source="folder", folder_id=2, chat_ids=[],
+        start_at=int(time.time()) - 1,
+    )
+    campaign = await db.campaign(USER, campaign_id)
+    check("цели берутся из папки",
+          await broadcast._targets(campaign) == [-1001, 3003])
+
+    await db.save_folders(account_id, [
+        {"folder_id": 2, "title": "Работа", "chat_ids": [-1001, 3003, -1002]},
+    ])
+    check("изменение папки подхватывается",
+          await broadcast._targets(campaign) == [-1001, 3003, -1002])
+    await db.delete_campaign(USER, campaign_id)
+
+
 def check_texts() -> None:
     print("\nТексты и кнопки")
     trial = db.Subscription(kind="trial", until=int(time.time()) + 5 * 86400)
@@ -449,6 +735,10 @@ async def run() -> None:
         await check_throttle()
         check_phones()
         check_init_data()
+        await check_broadcast()
+        await check_broadcast_errors()
+        await check_broadcast_limits()
+        await check_folders()
         await check_api()
         check_texts()
         check_wiring()

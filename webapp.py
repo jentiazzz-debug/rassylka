@@ -25,6 +25,8 @@ from functools import wraps
 from aiohttp import web
 
 import accounts
+import broadcast
+import chats
 import config
 import db
 
@@ -150,6 +152,26 @@ def _account_view(account: db.Account) -> dict:
     }
 
 
+async def _campaign_view(campaign: db.Campaign) -> dict:
+    targets = await broadcast._targets(campaign)
+    return {
+        "id": campaign.id,
+        "account_id": campaign.account_id,
+        "title": campaign.title,
+        "text": campaign.text,
+        "interval": campaign.interval,
+        "source": campaign.source,
+        "folder_id": campaign.folder_id,
+        "status": campaign.status,
+        "chats": len(targets),
+        "next_run_at": campaign.next_run_at,
+        "sent_ok": campaign.sent_ok,
+        "sent_err": campaign.sent_err,
+        "cycles": campaign.cycles,
+        "note": campaign.note,
+    }
+
+
 async def _state(user_id: int) -> dict:
     subscription = await db.subscription(user_id)
     return {
@@ -162,9 +184,15 @@ async def _state(user_id: int) -> dict:
             "paid": subscription.paid,
         },
         "accounts": [_account_view(a) for a in await db.accounts(user_id)],
+        "campaigns": [
+            await _campaign_view(c) for c in await db.campaigns(user_id)
+        ],
         "limits": {
             "max_accounts": config.MAX_ACCOUNTS,
             "trial_days": config.TRIAL_DAYS,
+            "min_interval": config.MIN_INTERVAL,
+            "daily_limit": config.DAILY_LIMIT,
+            "max_text": config.MAX_TEXT,
         },
         "support_url": config.SUPPORT_URL,
         "mtproto_ready": config.mtproto_ready(),
@@ -288,6 +316,183 @@ async def api_account_forget(
     return web.json_response({"ok": True})
 
 
+# --- чаты и папки -----------------------------------------------------
+
+
+@authed
+async def api_chats(request: web.Request, user: dict, data: dict) -> web.Response:
+    """Кэш чатов и папок аккаунта — то, из чего выбирают при создании."""
+    user_id = int(user["id"])
+    account_id = _int(data.get("account_id"))
+    account = await db.account(user_id, account_id)
+    if account is None:
+        return _fail("Такого аккаунта нет.")
+    found = await db.chats(account.id)
+    return web.json_response(
+        {
+            "ok": True,
+            "chats": [
+                {
+                    "id": chat.chat_id,
+                    "title": chat.title,
+                    "username": chat.username,
+                    # Тип для показа, а не внутренний: у Telegram канал и
+                    # супергруппа — один тип «channel», и называть в
+                    # списке группу каналом нельзя.
+                    "kind": (
+                        "channel"
+                        if chat.broadcast
+                        else "user" if chat.kind == "user" else "group"
+                    ),
+                }
+                for chat in found
+            ],
+            "folders": [
+                {
+                    "id": folder.folder_id,
+                    "title": folder.title,
+                    "chats": len(folder.chat_ids),
+                }
+                for folder in await db.folders(account.id)
+            ],
+        }
+    )
+
+
+@authed
+async def api_chats_scan(request: web.Request, user: dict, data: dict) -> web.Response:
+    """Перечитать диалоги у Telegram. Тяжёлый запрос — только по кнопке."""
+    try:
+        found = await chats.scan(int(user["id"]), _int(data.get("account_id")))
+    except accounts.LoginError as error:
+        return _fail(error.message)
+    return web.json_response({"ok": True, **found})
+
+
+# --- рассылки ---------------------------------------------------------
+
+
+@authed
+async def api_campaign_create(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    user_id = int(user["id"])
+
+    subscription = await db.subscription(user_id)
+    if not subscription.active:
+        return _fail(
+            "Бесплатный период закончился — новые рассылки не создаются. "
+            "Напишите в поддержку."
+        )
+
+    account = await db.account(user_id, _int(data.get("account_id")))
+    if account is None:
+        return _fail("Выберите аккаунт.")
+    if account.status != "ok":
+        return _fail("Этот аккаунт не в сети — подключите его заново.")
+
+    text = str(data.get("text") or "").strip()
+    if not text:
+        return _fail("Напишите текст сообщения.")
+    if len(text) > config.MAX_TEXT:
+        return _fail(f"Слишком длинный текст: максимум {config.MAX_TEXT} символов.")
+
+    interval = _int(data.get("interval"))
+    if interval < config.MIN_INTERVAL:
+        # Планка не техническая, а защитная: чаще — это заявка на
+        # блокировку аккаунта, и человеку лучше узнать об этом здесь.
+        return _fail(
+            f"Интервал меньше {config.MIN_INTERVAL // 60 or 1} мин — так "
+            "Telegram ограничит аккаунт. Поставьте больше."
+        )
+
+    source = "folder" if data.get("source") == "folder" else "chats"
+    folder_id = None
+    chat_ids: list[int] = []
+
+    if source == "folder":
+        folder_id = _int(data.get("folder_id"))
+        folder = await db.folder(account.id, folder_id)
+        if folder is None:
+            return _fail("Папка не найдена — обновите список чатов.")
+        if not folder.chat_ids:
+            return _fail("В этой папке нет чатов.")
+    else:
+        wanted = data.get("chat_ids")
+        wanted = [_int(v) for v in wanted] if isinstance(wanted, list) else []
+        # Сверяем с кэшем аккаунта: список приходит из браузера, и
+        # принимать оттуда произвольные id нельзя — так можно было бы
+        # заказать рассылку в чат, которого у аккаунта нет.
+        known = {chat.chat_id for chat in await db.chats(account.id)}
+        chat_ids = [chat_id for chat_id in wanted if chat_id in known]
+        if not chat_ids:
+            return _fail("Выберите хотя бы один чат.")
+
+    title = str(data.get("title") or "").strip()[:60] or text.split("\n")[0][:40]
+    campaign_id = await db.create_campaign(
+        user_id,
+        account.id,
+        title=title,
+        text=text,
+        interval=interval,
+        source=source,
+        folder_id=folder_id,
+        chat_ids=chat_ids,
+        # Первое сообщение уходит сразу: человек только что нажал
+        # «Запустить» и ждёт увидеть результат, а не через час.
+        start_at=int(time.time()),
+    )
+    campaign = await db.campaign(user_id, campaign_id)
+    return web.json_response(
+        {"ok": True, "campaign": await _campaign_view(campaign)}
+    )
+
+
+@authed
+async def api_campaign_toggle(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    user_id = int(user["id"])
+    campaign = await db.campaign(user_id, _int(data.get("id")))
+    if campaign is None:
+        return _fail("Рассылка не найдена.")
+
+    if campaign.status == "running":
+        await db.set_campaign_status(campaign.id, "paused", None)
+    else:
+        subscription = await db.subscription(user_id)
+        if not subscription.active:
+            return _fail("Бесплатный период закончился. Напишите в поддержку.")
+        account = await db.account(user_id, campaign.account_id)
+        if account is None or account.status != "ok":
+            return _fail("Аккаунт этой рассылки не в сети — подключите его заново.")
+        await db.set_campaign_status(campaign.id, "running", None)
+        await db.reschedule_campaign(campaign.id, int(time.time()))
+
+    return web.json_response(
+        {"ok": True, "campaign": await _campaign_view(await db.campaign(user_id, campaign.id))}
+    )
+
+
+@authed
+async def api_campaign_delete(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    if not await db.delete_campaign(int(user["id"]), _int(data.get("id"))):
+        return _fail("Рассылка не найдена.")
+    return web.json_response({"ok": True})
+
+
+@authed
+async def api_campaign_log(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    campaign = await db.campaign(int(user["id"]), _int(data.get("id")))
+    if campaign is None:
+        return _fail("Рассылка не найдена.")
+    return web.json_response({"ok": True, "sends": await db.sends(campaign.id)})
+
+
 def _owns(token: str, user: dict) -> bool:
     """Тот ли это человек, который начинал вход.
 
@@ -363,6 +568,12 @@ def build() -> web.Application:
             web.post("/api/login/cancel", api_login_cancel),
             web.post("/api/account/verify", api_account_verify),
             web.post("/api/account/forget", api_account_forget),
+            web.post("/api/chats", api_chats),
+            web.post("/api/chats/scan", api_chats_scan),
+            web.post("/api/campaign/create", api_campaign_create),
+            web.post("/api/campaign/toggle", api_campaign_toggle),
+            web.post("/api/campaign/delete", api_campaign_delete),
+            web.post("/api/campaign/log", api_campaign_log),
         ]
     )
     return app

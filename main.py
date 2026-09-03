@@ -19,6 +19,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScopeChat
 
 import accounts
+import broadcast
 import config
 import crypto
 import db
@@ -93,14 +94,20 @@ async def run() -> None:
 
     runner = await webapp.serve()
     sweeper = asyncio.create_task(accounts.sweeper(), name="logins-sweeper")
+    # Движок рассылки получает бота: про упёршийся лимит и про
+    # ограничение от Telegram человек должен узнать сразу в личке, а не
+    # когда сам зайдёт в приложение.
+    sender = asyncio.create_task(broadcast.worker(bot), name="broadcast")
     try:
         await dispatcher.start_polling(bot)
     finally:
-        sweeper.cancel()
-        try:
-            await sweeper
-        except asyncio.CancelledError:
-            pass
+        for task in (sweeper, sender):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await broadcast.close_all()
         # Незавершённые входы держат подключения к Telegram: закрываем их
         # руками, иначе процесс не завершается до таймаута.
         await accounts.close_all()

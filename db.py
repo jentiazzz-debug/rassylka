@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -66,6 +67,85 @@ CREATE TABLE IF NOT EXISTS code_requests (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_codes_user ON code_requests(user_id, created_at);
+
+-- Кэш диалогов аккаунта. access_hash хранится не для красоты: строка
+-- сессии несёт только ключ авторизации, справочник знакомых чатов в неё
+-- не входит. Без сохранённого хэша отправка по одному id требовала бы
+-- каждый раз заново вычитывать все диалоги — это лишний тяжёлый запрос
+-- перед каждым сообщением и лишний повод для FloodWait.
+CREATE TABLE IF NOT EXISTS chats (
+    account_id  INTEGER NOT NULL,
+    chat_id     INTEGER NOT NULL,
+    raw_id      INTEGER NOT NULL,
+    access_hash INTEGER,
+    kind        TEXT    NOT NULL,
+    -- Канал или супергруппа: у Telegram это один тип, различает их
+    -- только флаг. В списке чатов их надо показывать по-разному.
+    broadcast   INTEGER NOT NULL DEFAULT 0,
+    title       TEXT,
+    username    TEXT,
+    scanned_at  INTEGER NOT NULL,
+    PRIMARY KEY (account_id, chat_id)
+);
+
+CREATE TABLE IF NOT EXISTS folders (
+    account_id INTEGER NOT NULL,
+    folder_id  INTEGER NOT NULL,
+    title      TEXT,
+    chat_ids   TEXT    NOT NULL,
+    scanned_at INTEGER NOT NULL,
+    PRIMARY KEY (account_id, folder_id)
+);
+
+CREATE TABLE IF NOT EXISTS campaigns (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    account_id  INTEGER NOT NULL,
+    title       TEXT,
+    text        TEXT    NOT NULL,
+    interval    INTEGER NOT NULL,
+    source      TEXT    NOT NULL DEFAULT 'chats',
+    folder_id   INTEGER,
+    status      TEXT    NOT NULL DEFAULT 'running',
+    cursor      INTEGER NOT NULL DEFAULT 0,
+    next_run_at INTEGER NOT NULL DEFAULT 0,
+    sent_ok     INTEGER NOT NULL DEFAULT 0,
+    sent_err    INTEGER NOT NULL DEFAULT 0,
+    cycles      INTEGER NOT NULL DEFAULT 0,
+    note        TEXT,
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_campaigns_user ON campaigns(user_id);
+CREATE INDEX IF NOT EXISTS idx_campaigns_due  ON campaigns(status, next_run_at);
+
+CREATE TABLE IF NOT EXISTS campaign_targets (
+    campaign_id INTEGER NOT NULL,
+    position    INTEGER NOT NULL,
+    chat_id     INTEGER NOT NULL,
+    PRIMARY KEY (campaign_id, chat_id)
+);
+
+CREATE TABLE IF NOT EXISTS sends (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    account_id  INTEGER NOT NULL,
+    chat_id     INTEGER NOT NULL,
+    title       TEXT,
+    ok          INTEGER NOT NULL,
+    error       TEXT,
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sends_campaign ON sends(campaign_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_sends_account  ON sends(account_id, created_at);
+
+-- Паузы аккаунтов по FloodWait. В базе, а не в памяти: Telegram выдаёт
+-- их на часы, а передеплой за это время случается не раз — счётчик в
+-- памяти обнулялся бы и отправлял аккаунт продлевать себе наказание.
+CREATE TABLE IF NOT EXISTS account_pauses (
+    account_id INTEGER PRIMARY KEY,
+    until      INTEGER NOT NULL,
+    reason     TEXT
+);
 """
 
 _db: aiosqlite.Connection | None = None
@@ -340,6 +420,431 @@ async def log_code_request(user_id: int, phone: str) -> None:
         "DELETE FROM code_requests WHERE created_at < ?", (int(time.time()) - 86400,)
     )
     await _conn().commit()
+
+
+# --- чаты и папки аккаунта --------------------------------------------
+
+
+@dataclass
+class Chat:
+    account_id: int
+    #: Помеченный id, тот же, что показывает Telegram: у супергрупп и
+    #: каналов он с приставкой -100.
+    chat_id: int
+    raw_id: int
+    access_hash: int | None
+    #: user | chat | channel — от этого зависит, каким InputPeer слать.
+    kind: str
+    #: Канал (в супергруппе флаг снят). На отправку не влияет, нужен,
+    #: чтобы в списке чатов канал не назывался группой.
+    broadcast: bool
+    title: str
+    username: str | None
+
+
+def _chat(row: aiosqlite.Row) -> Chat:
+    return Chat(
+        account_id=row["account_id"],
+        chat_id=row["chat_id"],
+        raw_id=row["raw_id"],
+        access_hash=row["access_hash"],
+        kind=row["kind"],
+        broadcast=bool(row["broadcast"]),
+        title=row["title"] or str(row["chat_id"]),
+        username=row["username"],
+    )
+
+
+async def save_chats(account_id: int, rows: list[dict]) -> int:
+    """Переписать кэш диалогов аккаунта.
+
+    Именно переписать: чаты, из которых аккаунт вышел, должны исчезнуть
+    из списка, а не висеть в нём вечно. Всё одной транзакцией — иначе
+    сканирование, оборвавшееся посередине, оставило бы человека с
+    наполовину пустым списком.
+    """
+    now = int(time.time())
+    await _conn().execute("BEGIN")
+    try:
+        await _conn().execute("DELETE FROM chats WHERE account_id = ?", (account_id,))
+        await _conn().executemany(
+            """
+            INSERT INTO chats (account_id, chat_id, raw_id, access_hash,
+                               kind, broadcast, title, username, scanned_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    account_id,
+                    row["chat_id"],
+                    row["raw_id"],
+                    row.get("access_hash"),
+                    row["kind"],
+                    1 if row.get("broadcast") else 0,
+                    row.get("title"),
+                    row.get("username"),
+                    now,
+                )
+                for row in rows
+            ],
+        )
+    except Exception:
+        await _conn().rollback()
+        raise
+    await _conn().commit()
+    return len(rows)
+
+
+async def chats(account_id: int) -> list[Chat]:
+    rows = await _fetchall(
+        "SELECT * FROM chats WHERE account_id = ? ORDER BY title", (account_id,)
+    )
+    return [_chat(row) for row in rows]
+
+
+async def chats_by_ids(account_id: int, ids: list[int]) -> list[Chat]:
+    if not ids:
+        return []
+    marks = ",".join("?" for _ in ids)
+    rows = await _fetchall(
+        f"SELECT * FROM chats WHERE account_id = ? AND chat_id IN ({marks})",
+        (account_id, *ids),
+    )
+    return [_chat(row) for row in rows]
+
+
+@dataclass
+class Folder:
+    account_id: int
+    folder_id: int
+    title: str
+    chat_ids: list[int]
+
+
+async def save_folders(account_id: int, rows: list[dict]) -> int:
+    now = int(time.time())
+    await _conn().execute("BEGIN")
+    try:
+        await _conn().execute(
+            "DELETE FROM folders WHERE account_id = ?", (account_id,)
+        )
+        await _conn().executemany(
+            """
+            INSERT INTO folders (account_id, folder_id, title, chat_ids, scanned_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    account_id,
+                    row["folder_id"],
+                    row.get("title"),
+                    json.dumps(row.get("chat_ids") or []),
+                    now,
+                )
+                for row in rows
+            ],
+        )
+    except Exception:
+        await _conn().rollback()
+        raise
+    await _conn().commit()
+    return len(rows)
+
+
+async def folders(account_id: int) -> list[Folder]:
+    rows = await _fetchall(
+        "SELECT * FROM folders WHERE account_id = ? ORDER BY folder_id", (account_id,)
+    )
+    out = []
+    for row in rows:
+        try:
+            ids = json.loads(row["chat_ids"])
+        except (json.JSONDecodeError, TypeError):
+            ids = []
+        out.append(
+            Folder(
+                account_id=row["account_id"],
+                folder_id=row["folder_id"],
+                title=row["title"] or f"Папка {row['folder_id']}",
+                chat_ids=[int(i) for i in ids],
+            )
+        )
+    return out
+
+
+async def folder(account_id: int, folder_id: int) -> Folder | None:
+    found = [f for f in await folders(account_id) if f.folder_id == folder_id]
+    return found[0] if found else None
+
+
+# --- рассылки ---------------------------------------------------------
+
+
+@dataclass
+class Campaign:
+    id: int
+    user_id: int
+    account_id: int
+    title: str
+    text: str
+    #: Пауза между сообщениями, секунды. Круг по всем чатам занимает
+    #: interval × количество чатов — это стоит помнить, читая «раз в час».
+    interval: int
+    source: str
+    folder_id: int | None
+    status: str
+    cursor: int
+    next_run_at: int
+    sent_ok: int
+    sent_err: int
+    cycles: int
+    note: str | None
+    created_at: int
+
+
+def _campaign(row: aiosqlite.Row) -> Campaign:
+    return Campaign(
+        id=row["id"],
+        user_id=row["user_id"],
+        account_id=row["account_id"],
+        title=row["title"] or "Рассылка",
+        text=row["text"],
+        interval=row["interval"],
+        source=row["source"],
+        folder_id=row["folder_id"],
+        status=row["status"],
+        cursor=row["cursor"],
+        next_run_at=row["next_run_at"],
+        sent_ok=row["sent_ok"],
+        sent_err=row["sent_err"],
+        cycles=row["cycles"],
+        note=row["note"],
+        created_at=row["created_at"],
+    )
+
+
+async def create_campaign(
+    user_id: int,
+    account_id: int,
+    *,
+    title: str,
+    text: str,
+    interval: int,
+    source: str,
+    folder_id: int | None,
+    chat_ids: list[int],
+    start_at: int,
+) -> int:
+    now = int(time.time())
+    cursor = await _conn().execute(
+        """
+        INSERT INTO campaigns (user_id, account_id, title, text, interval,
+                               source, folder_id, status, next_run_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
+        """,
+        (user_id, account_id, title, text, interval, source, folder_id,
+         start_at, now),
+    )
+    campaign_id = cursor.lastrowid
+    # Порядок чатов фиксируется здесь и дальше не меняется: «по очереди»
+    # должно означать один и тот же круг, а не случайную выборку при
+    # каждом запуске.
+    await _conn().executemany(
+        "INSERT INTO campaign_targets (campaign_id, position, chat_id) "
+        "VALUES (?, ?, ?)",
+        [(campaign_id, position, chat_id)
+         for position, chat_id in enumerate(chat_ids)],
+    )
+    await _conn().commit()
+    return int(campaign_id)
+
+
+async def campaigns(user_id: int) -> list[Campaign]:
+    rows = await _fetchall(
+        "SELECT * FROM campaigns WHERE user_id = ? ORDER BY created_at DESC",
+        (user_id,),
+    )
+    return [_campaign(row) for row in rows]
+
+
+async def campaign(user_id: int, campaign_id: int) -> Campaign | None:
+    row = await _fetchone(
+        "SELECT * FROM campaigns WHERE id = ? AND user_id = ?",
+        (campaign_id, user_id),
+    )
+    return _campaign(row) if row else None
+
+
+async def due_campaigns(now: int) -> list[Campaign]:
+    rows = await _fetchall(
+        "SELECT * FROM campaigns WHERE status = 'running' AND next_run_at <= ? "
+        "ORDER BY next_run_at",
+        (now,),
+    )
+    return [_campaign(row) for row in rows]
+
+
+async def campaign_targets(campaign_id: int) -> list[int]:
+    rows = await _fetchall(
+        "SELECT chat_id FROM campaign_targets WHERE campaign_id = ? "
+        "ORDER BY position",
+        (campaign_id,),
+    )
+    return [int(row["chat_id"]) for row in rows]
+
+
+async def set_campaign_status(
+    campaign_id: int, status: str, note: str | None = None
+) -> None:
+    await _conn().execute(
+        "UPDATE campaigns SET status = ?, note = ? WHERE id = ?",
+        (status, note, campaign_id),
+    )
+    await _conn().commit()
+
+
+async def reschedule_campaign(campaign_id: int, next_run_at: int) -> None:
+    await _conn().execute(
+        "UPDATE campaigns SET next_run_at = ? WHERE id = ?",
+        (next_run_at, campaign_id),
+    )
+    await _conn().commit()
+
+
+async def advance_campaign(
+    campaign_id: int, *, cursor: int, next_run_at: int, cycles: int, ok: bool
+) -> None:
+    """Сдвинуть круг после отправки и записать её итог.
+
+    Заодно снимается note: там висят жалобы вида «упёрлись в дневной
+    лимит», и после состоявшейся отправки они уже неправда.
+    """
+    await _conn().execute(
+        f"""
+        UPDATE campaigns
+           SET cursor = ?, next_run_at = ?, cycles = ?, note = NULL,
+               {'sent_ok = sent_ok + 1' if ok else 'sent_err = sent_err + 1'}
+         WHERE id = ?
+        """,
+        (cursor, next_run_at, cycles, campaign_id),
+    )
+    await _conn().commit()
+
+
+async def delete_campaign(user_id: int, campaign_id: int) -> bool:
+    cursor = await _conn().execute(
+        "DELETE FROM campaigns WHERE id = ? AND user_id = ?", (campaign_id, user_id)
+    )
+    if cursor.rowcount:
+        await _conn().execute(
+            "DELETE FROM campaign_targets WHERE campaign_id = ?", (campaign_id,)
+        )
+        await _conn().execute(
+            "DELETE FROM sends WHERE campaign_id = ?", (campaign_id,)
+        )
+    await _conn().commit()
+    return cursor.rowcount > 0
+
+
+async def stop_account_campaigns(account_id: int, note: str) -> int:
+    """Остановить все рассылки аккаунта — при PeerFlood и подобном."""
+    cursor = await _conn().execute(
+        "UPDATE campaigns SET status = 'stopped', note = ? "
+        "WHERE account_id = ? AND status = 'running'",
+        (note, account_id),
+    )
+    await _conn().commit()
+    return cursor.rowcount
+
+
+# --- журнал отправок и лимиты -----------------------------------------
+
+
+async def log_send(
+    campaign_id: int,
+    account_id: int,
+    chat_id: int,
+    title: str | None,
+    ok: bool,
+    error: str | None,
+) -> None:
+    await _conn().execute(
+        """
+        INSERT INTO sends (campaign_id, account_id, chat_id, title, ok,
+                           error, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (campaign_id, account_id, chat_id, title, 1 if ok else 0, error,
+         int(time.time())),
+    )
+    await _conn().commit()
+
+
+async def sends(campaign_id: int, limit: int = 30) -> list[dict]:
+    rows = await _fetchall(
+        "SELECT * FROM sends WHERE campaign_id = ? ORDER BY created_at DESC "
+        "LIMIT ?",
+        (campaign_id, limit),
+    )
+    return [
+        {
+            "chat_id": row["chat_id"],
+            "title": row["title"],
+            "ok": bool(row["ok"]),
+            "error": row["error"],
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+async def sent_today(account_id: int) -> int:
+    """Сколько сообщений аккаунт отправил за сутки.
+
+    Считается по журналу, а не отдельным счётчиком: счётчик может
+    разъехаться с реальностью, сумма по журналу — нет.
+    """
+    row = await _fetchone(
+        "SELECT COUNT(*) AS n FROM sends "
+        "WHERE account_id = ? AND ok = 1 AND created_at > ?",
+        (account_id, int(time.time()) - 86400),
+    )
+    return int(row["n"]) if row else 0
+
+
+async def last_send_at(account_id: int) -> int:
+    """Когда аккаунт писал в последний раз — для паузы между сообщениями.
+
+    Пауза общая на аккаунт, а не на рассылку: Telegram смотрит на
+    аккаунт, и три рассылки с интервалом в минуту — это для него один
+    аккаунт, пишущий втрое чаще.
+    """
+    row = await _fetchone(
+        "SELECT MAX(created_at) AS last FROM sends WHERE account_id = ?",
+        (account_id,),
+    )
+    return int(row["last"] or 0) if row else 0
+
+
+async def pause_account(account_id: int, until: int, reason: str) -> None:
+    await _conn().execute(
+        "INSERT INTO account_pauses (account_id, until, reason) VALUES (?, ?, ?) "
+        "ON CONFLICT (account_id) DO UPDATE SET until = excluded.until, "
+        "reason = excluded.reason",
+        (account_id, until, reason),
+    )
+    await _conn().commit()
+
+
+async def account_pause(account_id: int) -> tuple[int, str] | None:
+    """До какого времени аккаунт молчит. None — не молчит."""
+    row = await _fetchone(
+        "SELECT until, reason FROM account_pauses WHERE account_id = ?",
+        (account_id,),
+    )
+    if row is None or int(row["until"]) <= int(time.time()):
+        return None
+    return int(row["until"]), row["reason"] or ""
 
 
 # --- статистика для админа --------------------------------------------

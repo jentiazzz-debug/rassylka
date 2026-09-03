@@ -18,21 +18,39 @@ let login = null;
 const $ = (id) => document.getElementById(id);
 
 const SCREENS = [
-  'loading', 'main', 'phone', 'code', 'password', 'done', 'outside',
+  'loading', 'main', 'phone', 'code', 'password', 'done', 'new', 'log',
+  'outside',
 ];
 
+/** Экраны входа по номеру: с них «назад» отменяет вход на сервере. */
+const LOGIN_SCREENS = ['phone', 'code', 'password'];
+
+let current = 'loading';
+
 function show(name) {
+  current = name;
   for (const screen of SCREENS) {
     $('screen-' + screen).hidden = screen !== name;
   }
-  // Кнопка «назад» в шапке Telegram: на шагах входа она уводит на
-  // главный экран, на главном её быть не должно — иначе она закрывает
+  // Кнопка «назад» в шапке Telegram: на вложенных экранах она уводит на
+  // главный, на главном её быть не должно — иначе она закрывает
   // приложение, и это выглядит как сбой.
   if (tg && tg.BackButton) {
-    const inFlow = ['phone', 'code', 'password'].includes(name);
-    inFlow ? tg.BackButton.show() : tg.BackButton.hide();
+    const nested = name !== 'main' && name !== 'loading' && name !== 'outside';
+    nested ? tg.BackButton.show() : tg.BackButton.hide();
   }
   window.scrollTo(0, 0);
+}
+
+/** «Назад» из любого места. С экранов входа — с отменой на сервере:
+ *  незавершённый вход держит подключение к Telegram, и бросать его
+ *  висеть до истечения таймаута незачем. */
+async function goBack() {
+  if (LOGIN_SCREENS.includes(current)) {
+    await cancelFlow();
+    return;
+  }
+  await refresh();
 }
 
 function haptic(kind) {
@@ -231,10 +249,196 @@ function renderAccounts() {
   }
 }
 
+// --- рассылки на главном экране ---------------------------------------
+
+function human(seconds) {
+  if (seconds < 60) return seconds + ' сек';
+  if (seconds < 3600) return Math.round(seconds / 60) + ' мин';
+  const hours = seconds / 3600;
+  return (Number.isInteger(hours) ? hours : hours.toFixed(1)) + ' ч';
+}
+
+function untilText(stamp) {
+  const left = stamp - Math.floor(Date.now() / 1000);
+  if (left <= 0) return 'вот-вот';
+  return 'через ' + human(left);
+}
+
+const STATUS = {
+  running: { label: 'идёт', css: '' },
+  paused: { label: 'на паузе', css: 'paused' },
+  stopped: { label: 'остановлена', css: 'stopped' },
+};
+
+function campaignCard(campaign) {
+  const row = document.createElement('div');
+  row.className = 'campaign';
+
+  const top = document.createElement('div');
+  top.className = 'campaign-top';
+  const name = document.createElement('span');
+  name.className = 'campaign-name';
+  name.textContent = campaign.title;
+  top.appendChild(name);
+
+  const status = STATUS[campaign.status] || STATUS.stopped;
+  const badge = document.createElement('span');
+  badge.className = 'badge ' + status.css;
+  badge.textContent = status.label;
+  top.appendChild(badge);
+  row.appendChild(top);
+
+  const text = document.createElement('div');
+  text.className = 'campaign-text';
+  text.textContent = campaign.text;
+  row.appendChild(text);
+
+  const facts = document.createElement('div');
+  facts.className = 'campaign-facts';
+  const parts = [
+    `${campaign.chats} ${plural(campaign.chats, 'чат', 'чата', 'чатов')}`,
+    `интервал ${human(campaign.interval)}`,
+    `отправлено ${campaign.sent_ok}`,
+  ];
+  if (campaign.sent_err) parts.push(`ошибок ${campaign.sent_err}`);
+  if (campaign.cycles) parts.push(`кругов ${campaign.cycles}`);
+  if (campaign.status === 'running') {
+    parts.push('следующее ' + untilText(campaign.next_run_at));
+  }
+  facts.textContent = parts.join(' · ');
+  row.appendChild(facts);
+
+  if (campaign.note) {
+    const note = document.createElement('div');
+    note.className = 'campaign-facts';
+    note.textContent = '⚠️ ' + campaign.note;
+    row.appendChild(note);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'campaign-actions';
+
+  const toggle = document.createElement('button');
+  toggle.className = 'btn small';
+  toggle.textContent = campaign.status === 'running' ? 'Пауза' : 'Продолжить';
+  toggle.onclick = async () => {
+    const done = busy(toggle, '…');
+    const result = await api('/api/campaign/toggle', { id: campaign.id });
+    done();
+    if (!result.ok) {
+      alertBox(result.error);
+      return;
+    }
+    haptic('light');
+    await refresh();
+  };
+  actions.appendChild(toggle);
+
+  const journal = document.createElement('button');
+  journal.className = 'btn small';
+  journal.textContent = 'Журнал';
+  journal.onclick = () => openLog(campaign);
+  actions.appendChild(journal);
+
+  const remove = document.createElement('button');
+  remove.className = 'btn small danger';
+  remove.textContent = 'Удалить';
+  remove.onclick = () => {
+    confirmBox(`Удалить рассылку «${campaign.title}»?`, async (yes) => {
+      if (!yes) return;
+      const result = await api('/api/campaign/delete', { id: campaign.id });
+      if (!result.ok) {
+        alertBox(result.error);
+        return;
+      }
+      haptic('success');
+      await refresh();
+    });
+  };
+  actions.appendChild(remove);
+
+  row.appendChild(actions);
+  return row;
+}
+
+function renderCampaigns() {
+  const box = $('campaigns');
+  box.textContent = '';
+  for (const campaign of state.campaigns) box.appendChild(campaignCard(campaign));
+  $('campaigns-empty').hidden = state.campaigns.length > 0;
+
+  // Рассылать не с чего, пока нет живого аккаунта: кнопка есть, но
+  // объясняет, чего не хватает, — так понятнее, чем спрятанная кнопка.
+  const alive = state.accounts.filter((a) => a.status === 'ok');
+  const button = $('add-campaign');
+  const note = $('campaign-note');
+  button.disabled = alive.length === 0 || !state.subscription.active;
+  if (alive.length === 0) {
+    note.textContent = 'Сначала подключите аккаунт — рассылка идёт от его имени.';
+    note.hidden = false;
+  } else if (!state.subscription.active) {
+    note.textContent = 'Бесплатный период закончился — новые рассылки не создаются.';
+    note.hidden = false;
+  } else {
+    note.hidden = true;
+  }
+}
+
 function renderMain() {
   renderSubscription();
   renderAccounts();
+  renderCampaigns();
   show('main');
+}
+
+// --- журнал отправок ---------------------------------------------------
+
+async function openLog(campaign) {
+  $('log-title').textContent = 'Журнал: ' + campaign.title;
+  const box = $('log-list');
+  box.textContent = '';
+  $('log-empty').hidden = true;
+  show('log');
+
+  const result = await api('/api/campaign/log', { id: campaign.id });
+  if (!result.ok) {
+    alertBox(result.error);
+    await refresh();
+    return;
+  }
+  if (!result.sends.length) {
+    $('log-empty').hidden = false;
+    return;
+  }
+  for (const send of result.sends) {
+    const row = document.createElement('div');
+    row.className = 'log-row';
+
+    const mark = document.createElement('span');
+    mark.className = 'log-mark ' + (send.ok ? 'good' : 'bad');
+    mark.textContent = send.ok ? '✓' : '✕';
+    row.appendChild(mark);
+
+    const body = document.createElement('span');
+    body.className = 'log-chat';
+    body.textContent = send.title || String(send.chat_id);
+    if (!send.ok && send.error) {
+      const error = document.createElement('div');
+      error.className = 'log-error';
+      error.textContent = send.error;
+      body.appendChild(error);
+    }
+    row.appendChild(body);
+
+    const when = document.createElement('span');
+    when.className = 'log-when';
+    when.textContent = new Date(send.created_at * 1000).toLocaleTimeString('ru-RU', {
+      hour: '2-digit', minute: '2-digit',
+    });
+    row.appendChild(when);
+
+    box.appendChild(row);
+  }
 }
 
 async function refresh() {
@@ -247,6 +451,264 @@ async function refresh() {
   state = result;
   login = result.pending || null;
   renderMain();
+}
+
+// --- создание рассылки -------------------------------------------------
+
+/** Готовые интервалы, секунды. Мельче минимума сервера отсеиваются:
+ *  предлагать кнопку, на которую сервер ответит отказом, — плохой тон. */
+const INTERVALS = [60, 300, 900, 1800, 3600, 10800, 21600];
+
+const KINDS = { user: 'личка', group: 'группа', channel: 'канал' };
+
+let draft = null;
+let picker = { chats: [], folders: [] };
+
+function openNew() {
+  const alive = state.accounts.filter((a) => a.status === 'ok');
+  if (!alive.length) return;
+
+  draft = {
+    accountId: alive[0].id,
+    source: 'chats',
+    chatIds: new Set(),
+    folderId: null,
+    interval: 900,
+  };
+  $('campaign-text').value = '';
+  $('chat-search').value = '';
+  fail('new-err', '');
+  $('scan-note').hidden = true;
+
+  // Аккаунт спрашиваем, только когда их несколько: выбор из одного
+  // пункта — лишний вопрос на экране, где и так много полей.
+  const select = $('campaign-account');
+  select.textContent = '';
+  for (const account of alive) {
+    const option = document.createElement('option');
+    option.value = String(account.id);
+    option.textContent = account.name || account.phone;
+    select.appendChild(option);
+  }
+  select.value = String(draft.accountId);
+  $('account-pick').hidden = alive.length < 2;
+
+  renderIntervals();
+  renderFooterNote();
+  countText();
+  setTab('chats');
+  show('new');
+  loadChats();
+}
+
+function setTab(name) {
+  draft.source = name;
+  for (const tab of document.querySelectorAll('.tab')) {
+    tab.classList.toggle('active', tab.dataset.tab === name);
+  }
+  $('tab-chats').hidden = name !== 'chats';
+  $('tab-folders').hidden = name !== 'folders';
+}
+
+function hintInto(box, text) {
+  box.textContent = '';
+  const hint = document.createElement('p');
+  hint.className = 'hint';
+  hint.style.padding = '10px';
+  hint.textContent = text;
+  box.appendChild(hint);
+}
+
+async function loadChats() {
+  hintInto($('chat-list'), 'Загружаем…');
+  const result = await api('/api/chats', { account_id: draft.accountId });
+  if (!result.ok) {
+    hintInto($('chat-list'), result.error);
+    return;
+  }
+  picker.chats = result.chats;
+  picker.folders = result.folders;
+  renderChatList();
+  renderFolders();
+}
+
+function renderChatList() {
+  const box = $('chat-list');
+  const query = $('chat-search').value.trim().toLowerCase();
+  box.textContent = '';
+
+  if (!picker.chats.length) {
+    hintInto(box, 'Список пуст. Нажмите «Обновить список чатов» — ' +
+      'мы прочитаем диалоги этого аккаунта.');
+    return;
+  }
+
+  const rows = picker.chats.filter((chat) => !query
+    || chat.title.toLowerCase().includes(query)
+    || (chat.username || '').toLowerCase().includes(query));
+
+  if (!rows.length) {
+    hintInto(box, 'Ничего не нашлось.');
+    return;
+  }
+
+  for (const chat of rows) {
+    const row = document.createElement('label');
+    row.className = 'pick';
+
+    const box2 = document.createElement('input');
+    box2.type = 'checkbox';
+    box2.checked = draft.chatIds.has(chat.id);
+    box2.onchange = () => {
+      box2.checked ? draft.chatIds.add(chat.id) : draft.chatIds.delete(chat.id);
+      countPicked();
+    };
+    row.appendChild(box2);
+
+    const title = document.createElement('span');
+    title.className = 'pick-title';
+    title.textContent = chat.title;
+    row.appendChild(title);
+
+    const kind = document.createElement('span');
+    kind.className = 'pick-kind';
+    kind.textContent = KINDS[chat.kind] || '';
+    row.appendChild(kind);
+
+    box.appendChild(row);
+  }
+  countPicked();
+}
+
+function countPicked() {
+  const count = draft.chatIds.size;
+  $('chat-picked').textContent =
+    `Выбрано: ${count}` + (count ? ` · круг займёт ${human(count * draft.interval)}` : '');
+}
+
+function renderFolders() {
+  const box = $('folder-list');
+  box.textContent = '';
+  if (!picker.folders.length) {
+    hintInto(box, 'Папок нет. Их создают в Telegram: Настройки → Папки с чатами.');
+    return;
+  }
+  for (const folder of picker.folders) {
+    const row = document.createElement('label');
+    row.className = 'pick';
+
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'folder';
+    radio.checked = draft.folderId === folder.id;
+    radio.onchange = () => { draft.folderId = folder.id; };
+    row.appendChild(radio);
+
+    const title = document.createElement('span');
+    title.className = 'pick-title';
+    title.textContent = folder.title;
+    row.appendChild(title);
+
+    const count = document.createElement('span');
+    count.className = 'pick-kind';
+    count.textContent = `${folder.chats} ${plural(folder.chats, 'чат', 'чата', 'чатов')}`;
+    row.appendChild(count);
+
+    box.appendChild(row);
+  }
+}
+
+function renderIntervals() {
+  const box = $('intervals');
+  box.textContent = '';
+  const allowed = INTERVALS.filter((s) => s >= state.limits.min_interval);
+  if (!allowed.includes(draft.interval)) draft.interval = allowed[0];
+
+  for (const seconds of allowed) {
+    const chip = document.createElement('button');
+    chip.className = 'chip' + (seconds === draft.interval ? ' active' : '');
+    chip.textContent = human(seconds);
+    chip.onclick = () => {
+      draft.interval = seconds;
+      renderIntervals();
+      countPicked();
+    };
+    box.appendChild(chip);
+  }
+  $('interval-note').textContent =
+    `Пауза между сообщениями. Меньше ${human(state.limits.min_interval)} нельзя: ` +
+    'за частую отправку Telegram ограничивает аккаунт. ' +
+    `Потолок — ${state.limits.daily_limit} сообщений в сутки на аккаунт.`;
+}
+
+function renderFooterNote() {
+  const note = $('footer-note');
+  note.hidden = state.subscription.paid;
+  note.textContent =
+    'На бесплатном тарифе в конец каждого сообщения дописывается строка ' +
+    'о том, каким ботом сделана рассылка.';
+}
+
+function countText() {
+  const length = $('campaign-text').value.length;
+  $('text-count').textContent = `${length} из ${state.limits.max_text}`;
+}
+
+async function rescan() {
+  const button = $('rescan');
+  const done = busy(button, 'Читаем чаты…');
+  const note = $('scan-note');
+  note.hidden = true;
+  const result = await api('/api/chats/scan', { account_id: draft.accountId });
+  done();
+  if (!result.ok) {
+    note.textContent = result.error;
+    note.hidden = false;
+    haptic('error');
+    return;
+  }
+  note.textContent =
+    `Нашлось ${result.chats} ${plural(result.chats, 'чат', 'чата', 'чатов')}` +
+    ` и ${result.folders} ${plural(result.folders, 'папка', 'папки', 'папок')}.`;
+  note.hidden = false;
+  haptic('success');
+  await loadChats();
+}
+
+async function createCampaign() {
+  const button = $('campaign-start');
+  fail('new-err', '');
+
+  const text = $('campaign-text').value.trim();
+  if (!text) {
+    fail('new-err', 'Напишите текст сообщения.');
+    return;
+  }
+  if (draft.source === 'chats' && !draft.chatIds.size) {
+    fail('new-err', 'Выберите хотя бы один чат.');
+    return;
+  }
+  if (draft.source === 'folder' && !draft.folderId) {
+    fail('new-err', 'Выберите папку.');
+    return;
+  }
+
+  const done = busy(button, 'Запускаем…');
+  const result = await api('/api/campaign/create', {
+    account_id: draft.accountId,
+    text,
+    interval: draft.interval,
+    source: draft.source,
+    folder_id: draft.folderId,
+    chat_ids: [...draft.chatIds],
+  });
+  done();
+  if (!result.ok) {
+    fail('new-err', result.error);
+    return;
+  }
+  haptic('success');
+  await refresh();
 }
 
 // --- диалоги ----------------------------------------------------------
@@ -406,6 +868,26 @@ function wire() {
   for (const button of document.querySelectorAll('[data-back]')) {
     button.onclick = cancelFlow;
   }
+  for (const button of document.querySelectorAll('[data-home]')) {
+    button.onclick = refresh;
+  }
+
+  $('add-campaign').onclick = openNew;
+  $('rescan').onclick = rescan;
+  $('campaign-start').onclick = createCampaign;
+  $('campaign-text').addEventListener('input', countText);
+  $('chat-search').addEventListener('input', renderChatList);
+  $('campaign-account').addEventListener('change', () => {
+    draft.accountId = Number($('campaign-account').value);
+    // Чаты у каждого аккаунта свои: выбранное от прошлого аккаунта
+    // здесь не просто лишнее, оно относится к чужому списку.
+    draft.chatIds.clear();
+    draft.folderId = null;
+    loadChats();
+  });
+  for (const tab of document.querySelectorAll('.tab')) {
+    tab.onclick = () => setTab(tab.dataset.tab);
+  }
 
   // Enter на телефонной клавиатуре — самый естественный способ
   // отправить короткое поле, и без этого человек ищет кнопку глазами.
@@ -424,7 +906,7 @@ function wire() {
     if ($('code').value.replace(/\D/g, '').length === 5) submitCode();
   });
 
-  if (tg && tg.BackButton) tg.BackButton.onClick(cancelFlow);
+  if (tg && tg.BackButton) tg.BackButton.onClick(goBack);
 }
 
 async function boot() {

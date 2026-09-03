@@ -42,6 +42,70 @@
       Подключённая сессия видна в Telegram → Настройки → Устройства —
       отозвать её можно там в любой момент.
     </p>
+
+    <h2 class="section-title">Рассылки</h2>
+    <div id="campaigns"></div>
+    <p id="campaigns-empty" class="hint" hidden>
+      Рассылок пока нет. Выберите чаты или папку, напишите сообщение и
+      задайте интервал — бот будет писать по кругу: чат за чатом.
+    </p>
+    <button id="add-campaign" class="btn primary">Новая рассылка</button>
+    <p id="campaign-note" class="hint center" hidden></p>
+  </section>
+
+  <!-- Создание рассылки: куда, что и как часто. -->
+  <section id="screen-new" class="screen" hidden>
+    <h2 class="section-title">Новая рассылка</h2>
+
+    <div id="account-pick" hidden>
+      <label class="label" for="campaign-account">Аккаунт</label>
+      <select id="campaign-account" class="field"></select>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="chats">Чаты</button>
+      <button class="tab" data-tab="folders">Папки</button>
+    </div>
+
+    <div id="tab-chats">
+      <input id="chat-search" class="field" type="text" placeholder="Поиск чата">
+      <div id="chat-list" class="picker"></div>
+      <p id="chat-picked" class="hint">Выбрано: 0</p>
+    </div>
+
+    <div id="tab-folders" hidden>
+      <div id="folder-list" class="picker"></div>
+      <p class="hint small">
+        Папка разворачивается в список чатов при каждой отправке — добавите
+        в неё чат в Telegram, и рассылка подхватит его после обновления
+        списка.
+      </p>
+    </div>
+
+    <button id="rescan" class="btn ghost">↻ Обновить список чатов</button>
+    <p id="scan-note" class="hint center" hidden></p>
+
+    <label class="label" for="campaign-text">Сообщение</label>
+    <textarea id="campaign-text" class="field area" rows="5"
+              placeholder="Текст, который уйдёт в каждый чат"></textarea>
+    <p id="text-count" class="hint small"></p>
+    <p id="footer-note" class="hint small" hidden></p>
+
+    <label class="label">Интервал между сообщениями</label>
+    <div id="intervals" class="chips"></div>
+    <p id="interval-note" class="hint small"></p>
+
+    <p class="err" id="new-err" hidden></p>
+    <button id="campaign-start" class="btn primary">Запустить</button>
+    <button class="btn ghost" data-home>Отмена</button>
+  </section>
+
+  <!-- Журнал отправок одной рассылки. -->
+  <section id="screen-log" class="screen" hidden>
+    <h2 class="section-title" id="log-title">Журнал</h2>
+    <div id="log-list"></div>
+    <p id="log-empty" class="hint" hidden>Пока ничего не отправлено.</p>
+    <button class="btn ghost" data-home>← Назад</button>
   </section>
 
   <!-- Шаг 1: номер. -->
