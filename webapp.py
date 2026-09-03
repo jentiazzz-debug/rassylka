@@ -182,6 +182,8 @@ async def _campaign_view(campaign: db.Campaign) -> dict:
         "folder_id": campaign.folder_id,
         "content": campaign.content,
         "saved_id": campaign.saved_id,
+        "pick": campaign.pick,
+        "variants": await db.variants(campaign),
         "status": campaign.status,
         "chats": len(targets),
         "next_run_at": campaign.next_run_at,
@@ -213,6 +215,7 @@ async def _state(user_id: int) -> dict:
             "min_interval": config.MIN_INTERVAL,
             "daily_limit": config.DAILY_LIMIT,
             "max_text": config.MAX_TEXT,
+            "max_variants": config.MAX_VARIANTS,
         },
         "support_url": config.SUPPORT_URL,
         "mtproto_ready": config.mtproto_ready(),
@@ -592,6 +595,9 @@ async def api_chats(request: web.Request, user: dict, data: dict) -> web.Respons
                     "id": folder.folder_id,
                     "title": folder.title,
                     "chats": len(folder.chat_ids),
+                    # Состав папки отдаём целиком: приложение по нажатию
+                    # отмечает все её чаты, а не хранит ссылку на папку.
+                    "chat_ids": folder.chat_ids,
                 }
                 for folder in await db.folders(account.id)
             ],
@@ -610,6 +616,39 @@ async def api_chats_scan(request: web.Request, user: dict, data: dict) -> web.Re
 
 
 # --- рассылки ---------------------------------------------------------
+
+
+def _variants(data: dict, known_materials: set[int]) -> tuple[list[dict], str]:
+    """Разобрать варианты сообщения из запроса.
+
+    Материалы сверяются с кэшем аккаунта: список приходит из браузера, и
+    принимать оттуда произвольные номера сообщений нельзя.
+    """
+    raw = data.get("variants")
+    if not isinstance(raw, list):
+        return [], "Добавьте хотя бы одно сообщение."
+
+    out: list[dict] = []
+    for item in raw[: config.MAX_VARIANTS]:
+        if not isinstance(item, dict):
+            continue
+        if item.get("content") == "saved":
+            saved_id = _int(item.get("saved_id"))
+            if saved_id in known_materials:
+                out.append({"content": "saved", "text": "", "saved_id": saved_id})
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        if len(text) > config.MAX_TEXT:
+            return [], (
+                f"Слишком длинный текст: максимум {config.MAX_TEXT} символов."
+            )
+        out.append({"content": "text", "text": text, "saved_id": None})
+
+    if not out:
+        return [], "Добавьте хотя бы одно сообщение."
+    return out, ""
 
 
 @authed
@@ -631,11 +670,10 @@ async def api_campaign_create(
     if account.status != "ok":
         return _fail("Этот аккаунт не в сети — подключите его заново.")
 
-    text = str(data.get("text") or "").strip()
-    if not text and data.get("content") != "saved":
-        return _fail("Напишите текст сообщения или выберите материал.")
-    if len(text) > config.MAX_TEXT:
-        return _fail(f"Слишком длинный текст: максимум {config.MAX_TEXT} символов.")
+    known_materials = {m["msg_id"] for m in await db.materials(account.id)}
+    variants, error = _variants(data, known_materials)
+    if error:
+        return _fail(error)
 
     interval = _int(data.get("interval"))
     if interval < config.MIN_INTERVAL:
@@ -646,29 +684,29 @@ async def api_campaign_create(
             "Telegram ограничит аккаунт. Поставьте больше."
         )
 
-    source = "folder" if data.get("source") == "folder" else "chats"
-    folder_id = None
-    chat_ids: list[int] = []
+    # Папка больше не хранится ссылкой: приложение раскрывает её в список
+    # чатов при выборе, и сюда приходят уже конкретные id. Так человек
+    # видит, что именно уйдёт, и может снять лишнее.
+    source, folder_id = "chats", None
+    wanted = data.get("chat_ids")
+    wanted = [_int(v) for v in wanted] if isinstance(wanted, list) else []
+    # Сверяем с кэшем аккаунта: список приходит из браузера, и принимать
+    # оттуда произвольные id нельзя — так можно было бы заказать рассылку
+    # в чат, которого у аккаунта нет.
+    known = {chat.chat_id for chat in await db.chats(account.id)}
+    chat_ids = [chat_id for chat_id in wanted if chat_id in known]
+    if not chat_ids:
+        return _fail("Выберите хотя бы один чат.")
 
-    if source == "folder":
-        folder_id = _int(data.get("folder_id"))
-        folder = await db.folder(account.id, folder_id)
-        if folder is None:
-            return _fail("Папка не найдена — обновите список чатов.")
-        if not folder.chat_ids:
-            return _fail("В этой папке нет чатов.")
-    else:
-        wanted = data.get("chat_ids")
-        wanted = [_int(v) for v in wanted] if isinstance(wanted, list) else []
-        # Сверяем с кэшем аккаунта: список приходит из браузера, и
-        # принимать оттуда произвольные id нельзя — так можно было бы
-        # заказать рассылку в чат, которого у аккаунта нет.
-        known = {chat.chat_id for chat in await db.chats(account.id)}
-        chat_ids = [chat_id for chat_id in wanted if chat_id in known]
-        if not chat_ids:
-            return _fail("Выберите хотя бы один чат.")
+    pick = "order" if data.get("pick") == "order" else "random"
+    # Первый вариант дублируется в саму запись рассылки: по нему рисуется
+    # карточка, и на нём же держатся рассылки, заведённые до появления
+    # вариантов.
+    first = variants[0]
+    text, content, saved_id = first["text"], first["content"], first["saved_id"]
 
-    title = str(data.get("title") or "").strip()[:60] or text.split("\n")[0][:40]
+    title = (str(data.get("title") or "").strip()[:60]
+             or (text or "Рассылка").split("\n")[0][:40])
     campaign_id = await db.create_campaign(
         user_id,
         account.id,
@@ -683,7 +721,9 @@ async def api_campaign_create(
         start_at=int(time.time()),
         content=content,
         saved_id=saved_id,
+        pick=pick,
     )
+    await db.set_variants(campaign_id, variants)
     campaign = await db.campaign(user_id, campaign_id)
     return web.json_response(
         {"ok": True, "campaign": await _campaign_view(campaign)}
@@ -726,18 +766,10 @@ async def api_campaign_edit(
     if campaign is None:
         return _fail("Рассылка не найдена.")
 
-    text = str(data.get("text") or "").strip()
-    content, saved_id = "text", None
-    if data.get("content") == "saved":
-        saved_id = _int(data.get("saved_id"))
-        if not await db.material(campaign.account_id, saved_id):
-            return _fail("Материал не найден — обновите список чатов.")
-        content = "saved"
-    elif not text:
-        return _fail("Напишите текст сообщения или выберите материал.")
-
-    if len(text) > config.MAX_TEXT:
-        return _fail(f"Слишком длинный текст: максимум {config.MAX_TEXT} символов.")
+    known_materials = {m["msg_id"] for m in await db.materials(campaign.account_id)}
+    variants, error = _variants(data, known_materials)
+    if error:
+        return _fail(error)
 
     interval = _int(data.get("interval")) or campaign.interval
     if interval < config.MIN_INTERVAL:
@@ -746,12 +778,17 @@ async def api_campaign_edit(
             "Telegram ограничит аккаунт."
         )
 
+    pick = "order" if data.get("pick") == "order" else "random"
+    first = variants[0]
+    text, content, saved_id = first["text"], first["content"], first["saved_id"]
+
     title = str(data.get("title") or "").strip()[:60] or campaign.title
     await db.edit_campaign(
         user_id, campaign.id,
         title=title, text=text, interval=interval,
-        content=content, saved_id=saved_id,
+        content=content, saved_id=saved_id, pick=pick,
     )
+    await db.set_variants(campaign.id, variants)
     return web.json_response(
         {"ok": True, "campaign": await _campaign_view(
             await db.campaign(user_id, campaign.id))}

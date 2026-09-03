@@ -195,6 +195,28 @@ class MaterialGone(Exception):
     """Сообщение-материал пропало из «Избранного»."""
 
 
+async def pick_variant(campaign: db.Campaign) -> dict:
+    """Какой из вариантов сообщения отправить сейчас.
+
+    Один и тот же текст, уходящий по кругу в сотню чатов, — самый
+    заметный признак рассылки из всех, и ловится он тривиально: по
+    совпадению строк. Несколько вариантов вперемешку такую проверку уже
+    не проходят.
+
+    Вразнобой — по умолчанию: очередь предсказуема, и по ней рассылка
+    вычисляется почти так же легко, как по одному тексту. Очередь
+    оставлена для тех, кому важен порядок.
+    """
+    items = await db.variants(campaign)
+    if len(items) == 1:
+        return items[0]
+    if campaign.pick == "order":
+        position = campaign.text_cursor % len(items)
+        await db.set_text_cursor(campaign.id, (position + 1) % len(items))
+        return items[position]
+    return random.choice(items)
+
+
 async def _deliver(client, campaign: db.Campaign, peer) -> None:
     """Отправить в чат то, что задано рассылкой.
 
@@ -209,15 +231,17 @@ async def _deliver(client, campaign: db.Campaign, peer) -> None:
     часы, и сохранённая ссылка на медиа через сутки перестаёт работать.
     Свежее чтение выдаёт свежую ссылку.
     """
-    if campaign.content != "saved" or not campaign.saved_id:
+    variant = await pick_variant(campaign)
+
+    if variant.get("content") != "saved" or not variant.get("saved_id"):
         # parse_mode=None намеренно: текст пишут в обычное поле, и
         # звёздочки с подчёркиваниями в нём должны остаться собой, а не
         # превратиться в разметку или сломать отправку.
-        text = await compose(campaign.user_id, campaign.text)
+        text = await compose(campaign.user_id, variant.get("text") or "")
         await client.send_message(peer, text, parse_mode=None)
         return
 
-    source = await client.get_messages("me", ids=campaign.saved_id)
+    source = await client.get_messages("me", ids=variant["saved_id"])
     if source is None:
         raise MaterialGone()
 
@@ -273,6 +297,79 @@ async def _advance(campaign: db.Campaign, total: int, ok: bool) -> None:
         cycles=cycles,
         ok=ok,
     )
+
+
+# --- подписка на чат --------------------------------------------------
+
+#: Отказы, за которыми может стоять «сначала подпишись». В таких чатах
+#: обязательная подписка выставлена правами: аккаунт, который не состоит
+#: в чате или в связанном канале, получает отказ на каждой отправке.
+JOINABLE = {
+    "ChatWriteForbiddenError",
+    "ChannelPrivateError",
+    "UserNotParticipantError",
+    "ChannelInvalidError",
+}
+
+
+async def try_join(client, account: db.Account, chat: db.Chat) -> bool:
+    """Подписаться на чат и на связанный с ним канал. True — получилось.
+
+    Зачем связанный канал. Обязательная подписка чаще всего устроена так:
+    есть канал, к нему привязан чат для обсуждений, и писать в чат может
+    только подписчик канала. Вступления в сам чат тут мало — нужен канал,
+    и его адрес лежит в описании чата.
+
+    Вступления Telegram считает отдельно от сообщений и наказывает за них
+    так же, поэтому: потолок в сутки, отметка о каждой попытке в базе и
+    никаких повторов в тот же чат раньше суток.
+    """
+    if not config.AUTO_JOIN or not config.JOIN_LIMIT:
+        return False
+    # В обычную группу (не супергруппу) без приглашения не вступить —
+    # у Telegram для этого просто нет метода.
+    if chat.kind != "channel":
+        return False
+    if await db.join_tried(account.id, chat.chat_id, config.JOIN_RETRY_AFTER):
+        return False
+    if await db.joins_today(account.id) >= config.JOIN_LIMIT:
+        log.info("аккаунт %s: дневной потолок вступлений", account.title)
+        return False
+
+    from telethon.tl.functions.channels import (
+        GetFullChannelRequest,
+        JoinChannelRequest,
+    )
+
+    peer = _input_peer(chat)
+    joined = False
+    try:
+        await client(JoinChannelRequest(peer))
+        joined = True
+        log.info("аккаунт %s вступил в «%s»", account.title, chat.title)
+    except Exception as error:
+        name = type(error).__name__
+        # Уже состоим — не ошибка: значит, дело было в связанном канале.
+        if name != "UserAlreadyParticipantError":
+            await db.log_join(account.id, chat.chat_id, False, name)
+            log.info("вступить в «%s» не вышло: %s", chat.title, name)
+            if name.startswith("FloodWait"):
+                return False
+
+    # Связанный канал — тот самый, на который просят подписаться.
+    try:
+        full = await client(GetFullChannelRequest(peer))
+        linked = getattr(full.full_chat, "linked_chat_id", None)
+        if linked:
+            await client(JoinChannelRequest(linked))
+            joined = True
+            log.info("аккаунт %s вступил в связанный канал «%s»",
+                     account.title, chat.title)
+    except Exception as error:
+        log.debug("связанный канал «%s»: %s", chat.title, type(error).__name__)
+
+    await db.log_join(account.id, chat.chat_id, joined, None if joined else "нет")
+    return joined
 
 
 async def _notify(bot, user_id: int, text: str) -> None:
@@ -421,6 +518,16 @@ async def _handle_error(
         await _close(account.id)
         await _notify(bot, campaign.user_id, texts.campaign_account_dead(campaign))
         return
+
+    if action == "skip" and type(error).__name__ in JOINABLE:
+        # Похоже на обязательную подписку. Пробуем вступить и повторить
+        # тот же чат — курсор не двигаем, иначе чат уедет на целый круг.
+        live = _clients.get(account.id)
+        if live is not None and await try_join(live.client, account, chat):
+            await db.reschedule_campaign(
+                campaign.id, now + config.ACCOUNT_MIN_GAP
+            )
+            return
 
     if action == "unknown":
         log.warning(

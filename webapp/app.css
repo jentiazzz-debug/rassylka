@@ -467,7 +467,7 @@ input[type="file"].field::file-selector-button {
   border-radius: var(--radius-s);
   background: var(--accent-soft);
 }
-.tab, .ctab, .etab {
+.tab, .ptab, .etab {
   flex: 1;
   padding: 9px 12px;
   border: 0;
@@ -480,12 +480,87 @@ input[type="file"].field::file-selector-button {
   cursor: pointer;
   transition: background .16s ease, color .16s ease;
 }
-.tab.active, .ctab.active, .etab.active {
+.tab.active, .ptab.active, .etab.active {
   background: #fff;
   color: var(--ink);
   font-weight: 600;
   box-shadow: 0 2px 8px rgba(20, 26, 44, .08);
 }
+
+/* --- шаги мастера --- */
+
+.steps { display: flex; gap: 7px; }
+.step {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  background: var(--accent-soft);
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all .16s ease;
+}
+.step b {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: rgba(18, 20, 26, .1);
+  font-size: 11px;
+  font-weight: 700;
+}
+.step.active {
+  background: rgba(255, 255, 255, .72);
+  border-color: var(--glass-edge);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(20, 26, 44, .09);
+}
+.step.active b { background: var(--ink); color: #fff; }
+.step.done b { background: var(--ok); color: #fff; }
+
+.nav-row { display: flex; gap: 9px; }
+.nav-row .btn { flex: 1; }
+
+/* --- варианты сообщения --- */
+
+.variant { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; }
+.variant + .variant { border-top: 1px solid var(--hairline); }
+.variant textarea {
+  flex: 1;
+  min-height: 76px;
+  padding: 10px 12px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .55);
+  color: var(--ink);
+  font: inherit;
+  resize: vertical;
+}
+.variant textarea:focus { outline: none; border-color: rgba(18, 20, 26, .3); }
+.variant-drop {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.variant-drop:active { background: rgba(200, 55, 45, .1); color: var(--danger); }
 
 .chips { display: flex; flex-wrap: wrap; gap: 7px; }
 .chip {

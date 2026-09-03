@@ -124,6 +124,9 @@ CREATE TABLE IF NOT EXISTS campaigns (
     -- «Избранного» аккаунта, вместе с медиа и оформлением.
     content     TEXT    NOT NULL DEFAULT 'text',
     saved_id    INTEGER,
+    -- order — варианты по очереди, random — вразнобой.
+    pick        TEXT    NOT NULL DEFAULT 'random',
+    text_cursor INTEGER NOT NULL DEFAULT 0,
     status      TEXT    NOT NULL DEFAULT 'running',
     cursor      INTEGER NOT NULL DEFAULT 0,
     next_run_at INTEGER NOT NULL DEFAULT 0,
@@ -168,6 +171,35 @@ CREATE TABLE IF NOT EXISTS payments (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id, created_at);
+
+-- Варианты сообщения одной рассылки. Одинаковый текст, уходящий по
+-- кругу в сотню чатов, — самый заметный признак рассылки из всех, и
+-- ловится он тривиально. Несколько вариантов вперемешку такую проверку
+-- уже не проходят.
+CREATE TABLE IF NOT EXISTS campaign_texts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    position    INTEGER NOT NULL,
+    content     TEXT    NOT NULL DEFAULT 'text',
+    text        TEXT,
+    saved_id    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_texts_campaign
+    ON campaign_texts(campaign_id, position);
+
+-- Попытки подписаться на чат. Пишутся в базу, чтобы не долбиться в один
+-- и тот же закрытый чат каждый круг: Telegram считает вступления
+-- отдельно от сообщений и наказывает за них так же.
+CREATE TABLE IF NOT EXISTS joins (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    chat_id    INTEGER NOT NULL,
+    ok         INTEGER NOT NULL,
+    error      TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_joins_account ON joins(account_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_joins_chat ON joins(account_id, chat_id, created_at);
 
 -- Движения по монетам. Журнал, а не только баланс: человек должен
 -- видеть, откуда монеты взялись и куда делись, а мы — уметь разобрать
@@ -257,6 +289,14 @@ async def _migrate() -> None:
     )
     await _ensure_column(
         "users", "ref_by", "ALTER TABLE users ADD COLUMN ref_by INTEGER"
+    )
+    await _ensure_column(
+        "campaigns", "pick",
+        "ALTER TABLE campaigns ADD COLUMN pick TEXT NOT NULL DEFAULT 'random'",
+    )
+    await _ensure_column(
+        "campaigns", "text_cursor",
+        "ALTER TABLE campaigns ADD COLUMN text_cursor INTEGER NOT NULL DEFAULT 0",
     )
 
 
@@ -855,6 +895,9 @@ class Campaign:
     #: из «Избранного» аккаунта вместе с медиа и оформлением.
     content: str
     saved_id: int | None
+    #: order — варианты по очереди, random — вразнобой.
+    pick: str
+    text_cursor: int
     status: str
     cursor: int
     next_run_at: int
@@ -877,6 +920,8 @@ def _campaign(row: aiosqlite.Row) -> Campaign:
         folder_id=row["folder_id"],
         content=(row["content"] if "content" in row.keys() else None) or "text",
         saved_id=row["saved_id"] if "saved_id" in row.keys() else None,
+        pick=(row["pick"] if "pick" in row.keys() else None) or "random",
+        text_cursor=row["text_cursor"] if "text_cursor" in row.keys() else 0,
         status=row["status"],
         cursor=row["cursor"],
         next_run_at=row["next_run_at"],
@@ -901,17 +946,18 @@ async def create_campaign(
     start_at: int,
     content: str = "text",
     saved_id: int | None = None,
+    pick: str = "random",
 ) -> int:
     now = int(time.time())
     cursor = await _conn().execute(
         """
         INSERT INTO campaigns (user_id, account_id, title, text, interval,
-                               source, folder_id, content, saved_id,
+                               source, folder_id, content, saved_id, pick,
                                status, next_run_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
         """,
         (user_id, account_id, title, text, interval, source, folder_id,
-         content, saved_id, start_at, now),
+         content, saved_id, pick, start_at, now),
     )
     campaign_id = cursor.lastrowid
     # Порядок чатов фиксируется здесь и дальше не меняется: «по очереди»
@@ -925,6 +971,93 @@ async def create_campaign(
     )
     await _conn().commit()
     return int(campaign_id)
+
+
+async def set_variants(campaign_id: int, variants: list[dict]) -> None:
+    """Переписать варианты сообщения одной рассылки."""
+    await _conn().execute(
+        "DELETE FROM campaign_texts WHERE campaign_id = ?", (campaign_id,)
+    )
+    await _conn().executemany(
+        "INSERT INTO campaign_texts (campaign_id, position, content, text, "
+        "saved_id) VALUES (?, ?, ?, ?, ?)",
+        [
+            (campaign_id, position, item.get("content") or "text",
+             item.get("text") or "", item.get("saved_id"))
+            for position, item in enumerate(variants)
+        ],
+    )
+    await _conn().commit()
+
+
+async def variants(campaign: Campaign) -> list[dict]:
+    """Варианты сообщения. Пусто — берём то, что лежит в самой рассылке.
+
+    Запасной путь нужен старым рассылкам: они заведены до появления
+    вариантов, и их единственное сообщение живёт в полях campaigns.
+    Переливать его отдельной миграцией незачем — достаточно прочитать
+    оттуда.
+    """
+    rows = await _fetchall(
+        "SELECT content, text, saved_id FROM campaign_texts "
+        "WHERE campaign_id = ? ORDER BY position",
+        (campaign.id,),
+    )
+    if rows:
+        return [
+            {"content": row["content"], "text": row["text"] or "",
+             "saved_id": row["saved_id"]}
+            for row in rows
+        ]
+    return [{
+        "content": campaign.content,
+        "text": campaign.text,
+        "saved_id": campaign.saved_id,
+    }]
+
+
+async def set_text_cursor(campaign_id: int, cursor: int) -> None:
+    await _conn().execute(
+        "UPDATE campaigns SET text_cursor = ? WHERE id = ?",
+        (cursor, campaign_id),
+    )
+    await _conn().commit()
+
+
+# --- подписка на чаты -------------------------------------------------
+
+
+async def log_join(account_id: int, chat_id: int, ok: bool,
+                   error: str | None) -> None:
+    await _conn().execute(
+        "INSERT INTO joins (account_id, chat_id, ok, error, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (account_id, chat_id, 1 if ok else 0, error, int(time.time())),
+    )
+    await _conn().commit()
+
+
+async def joins_today(account_id: int) -> int:
+    row = await _fetchone(
+        "SELECT COUNT(*) AS n FROM joins WHERE account_id = ? AND created_at > ?",
+        (account_id, int(time.time()) - 86400),
+    )
+    return int(row["n"]) if row else 0
+
+
+async def join_tried(account_id: int, chat_id: int, within: int) -> bool:
+    """Пробовали ли уже вступить в этот чат недавно.
+
+    Без этой проверки движок ломился бы в закрытый чат каждый круг, а
+    вступления Telegram считает отдельно от сообщений и наказывает за
+    них так же.
+    """
+    row = await _fetchone(
+        "SELECT 1 FROM joins WHERE account_id = ? AND chat_id = ? "
+        "AND created_at > ? LIMIT 1",
+        (account_id, chat_id, int(time.time()) - within),
+    )
+    return row is not None
 
 
 async def campaigns(user_id: int) -> list[Campaign]:
@@ -1008,6 +1141,7 @@ async def edit_campaign(
     interval: int,
     content: str,
     saved_id: int | None,
+    pick: str = "random",
 ) -> bool:
     """Поменять текст, материал, интервал и название.
 
@@ -1018,10 +1152,11 @@ async def edit_campaign(
     cursor = await _conn().execute(
         """
         UPDATE campaigns
-           SET title = ?, text = ?, interval = ?, content = ?, saved_id = ?
+           SET title = ?, text = ?, interval = ?, content = ?, saved_id = ?,
+               pick = ?
          WHERE id = ? AND user_id = ?
         """,
-        (title, text, interval, content, saved_id, campaign_id, user_id),
+        (title, text, interval, content, saved_id, pick, campaign_id, user_id),
     )
     await _conn().commit()
     return cursor.rowcount > 0
@@ -1037,6 +1172,9 @@ async def delete_campaign(user_id: int, campaign_id: int) -> bool:
         )
         await _conn().execute(
             "DELETE FROM sends WHERE campaign_id = ?", (campaign_id,)
+        )
+        await _conn().execute(
+            "DELETE FROM campaign_texts WHERE campaign_id = ?", (campaign_id,)
         )
     await _conn().commit()
     return cursor.rowcount > 0

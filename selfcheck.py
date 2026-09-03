@@ -1018,6 +1018,126 @@ async def check_materials() -> None:
     await db.delete_account(USER, account_id)
 
 
+async def check_variants() -> None:
+    print("\nВарианты сообщения")
+    account_id = await db.save_account(
+        USER, "+79990000400", crypto.encrypt("s"), tg_id=12,
+        name="Вариантный", username=None,
+    )
+    campaign_id = await db.create_campaign(
+        USER, account_id, title="Много текстов", text="первый", interval=0,
+        source="chats", folder_id=None, chat_ids=[-1001],
+        start_at=int(time.time()), pick="order",
+    )
+    campaign = await db.campaign(USER, campaign_id)
+
+    # Без вариантов берётся то, что лежит в самой рассылке: так работают
+    # рассылки, заведённые до появления вариантов.
+    fallback = await db.variants(campaign)
+    check("без вариантов берётся текст рассылки",
+          len(fallback) == 1 and fallback[0]["text"] == "первый",
+          str(fallback))
+
+    await db.set_variants(campaign_id, [
+        {"content": "text", "text": "первый"},
+        {"content": "text", "text": "второй"},
+        {"content": "saved", "saved_id": 501},
+    ])
+    saved = await db.variants(campaign)
+    check("варианты записались", len(saved) == 3, str(len(saved)))
+    check("порядок сохраняется", saved[0]["text"] == "первый", str(saved[0]))
+    check("материал среди вариантов",
+          saved[2]["content"] == "saved" and saved[2]["saved_id"] == 501,
+          str(saved[2]))
+
+    # По очереди: варианты идут строго по кругу.
+    order = []
+    for _ in range(5):
+        fresh = await db.campaign(USER, campaign_id)
+        picked = await broadcast.pick_variant(fresh)
+        order.append(picked.get("text") or f"saved:{picked.get('saved_id')}")
+    check(f"по очереди: {order}",
+          order == ["первый", "второй", "saved:501", "первый", "второй"],
+          str(order))
+
+    # Вразнобой: за много попыток встречаются все варианты и порядок не
+    # повторяет очередь.
+    await db.edit_campaign(
+        USER, campaign_id, title="Много текстов", text="первый", interval=0,
+        content="text", saved_id=None, pick="random",
+    )
+    await db.set_variants(campaign_id, [
+        {"content": "text", "text": "первый"},
+        {"content": "text", "text": "второй"},
+        {"content": "text", "text": "третий"},
+    ])
+    fresh = await db.campaign(USER, campaign_id)
+    seen = set()
+    for _ in range(60):
+        seen.add((await broadcast.pick_variant(fresh))["text"])
+    check("вразнобой встречаются все варианты", len(seen) == 3, str(seen))
+
+    # Единственный вариант отдаётся без всякой ротации.
+    await db.set_variants(campaign_id, [{"content": "text", "text": "один"}])
+    fresh = await db.campaign(USER, campaign_id)
+    single = {(await broadcast.pick_variant(fresh))["text"] for _ in range(5)}
+    check("один вариант — он и уходит", single == {"один"}, str(single))
+
+    # Удаление рассылки уносит и варианты.
+    await db.delete_campaign(USER, campaign_id)
+    rest = await db._fetchall(
+        "SELECT 1 FROM campaign_texts WHERE campaign_id = ?", (campaign_id,)
+    )
+    check("варианты удалились вместе с рассылкой", not rest, str(len(rest)))
+    await db.delete_account(USER, account_id)
+
+
+async def check_joins() -> None:
+    print("\nПодписка на чаты с ОП")
+    account_id = await db.save_account(
+        USER, "+79990000500", crypto.encrypt("s"), tg_id=13,
+        name="Подписчик", username=None,
+    )
+    check("вступлений пока нет", await db.joins_today(account_id) == 0)
+    check("в чат ещё не ломились",
+          not await db.join_tried(account_id, -1001, 86400))
+
+    await db.log_join(account_id, -1001, False, "ChannelPrivateError")
+    check("попытка записалась", await db.joins_today(account_id) == 1)
+    check("повтор в тот же чат отсекается",
+          await db.join_tried(account_id, -1001, 86400))
+    check("другой чат не задет",
+          not await db.join_tried(account_id, -1002, 86400))
+
+    # Старая попытка не должна держать чат вечно: через сутки в него
+    # можно попробовать снова.
+    await db._conn().execute(
+        "UPDATE joins SET created_at = ? WHERE account_id = ? AND chat_id = ?",
+        (int(time.time()) - 90000, account_id, -1001),
+    )
+    await db._conn().commit()
+    check("вчерашняя попытка не блокирует",
+          not await db.join_tried(account_id, -1001, 86400))
+    check("и в счётчик суток не идёт", await db.joins_today(account_id) == 0)
+
+    # Ошибки, за которыми может стоять обязательная подписка.
+    for name in ("ChatWriteForbiddenError", "ChannelPrivateError",
+                 "UserNotParticipantError"):
+        check(f"{name} ведёт к попытке подписки",
+              name in broadcast.JOINABLE)
+    check("бан в чате подпиской не лечится",
+          "UserBannedInChannelError" not in broadcast.JOINABLE)
+
+    # Потолок вступлений в сутки.
+    for chat_id in range(-2000, -2000 + config.JOIN_LIMIT):
+        await db.log_join(account_id, chat_id, True, None)
+    check("дневной потолок вступлений считается",
+          await db.joins_today(account_id) >= config.JOIN_LIMIT,
+          str(await db.joins_today(account_id)))
+
+    await db.delete_account(USER, account_id)
+
+
 async def check_footer_on_media() -> None:
     print("\nПодпись бесплатного тарифа")
     config.FREE_FOOTER = "Рассылка бесплатно — @тестбот"
@@ -1111,6 +1231,8 @@ async def run() -> None:
         await check_payments()
         await check_referrals()
         await check_materials()
+        await check_variants()
+        await check_joins()
         await check_footer_on_media()
         await check_api()
         check_texts()

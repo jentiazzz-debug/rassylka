@@ -264,74 +264,102 @@
     </button>
   </nav>
 
-  <!-- Создание рассылки: куда, что и как часто. -->
+  <!-- Создание рассылки. Три шага, а не одна простыня: полей много, и
+       на телефоне длинная форма означает бесконечную прокрутку — легко
+       не заметить, что что-то не заполнено. -->
   <section id="screen-new" class="screen" hidden>
-    <h2 class="section-title">Новая рассылка</h2>
-
-    <div id="account-pick" hidden>
-      <label class="label" for="campaign-account">Аккаунт</label>
-      <select id="campaign-account" class="field"></select>
+    <div class="steps">
+      <button class="step active" data-step="0"><b>1</b>Куда</button>
+      <button class="step" data-step="1"><b>2</b>Что</button>
+      <button class="step" data-step="2"><b>3</b>Как</button>
     </div>
 
-    <div class="tabs">
-      <button class="tab active" data-tab="chats">Чаты</button>
-      <button class="tab" data-tab="folders">Папки</button>
+    <!-- Шаг 1: чаты. -->
+    <div id="step-where">
+      <div id="account-pick" hidden>
+        <label class="label" for="campaign-account">Аккаунт</label>
+        <select id="campaign-account" class="field"></select>
+      </div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="chats">Чаты</button>
+        <button class="tab" data-tab="folders">Папки</button>
+      </div>
+
+      <div id="tab-chats">
+        <input id="chat-search" class="field" type="text" placeholder="Поиск чата">
+        <div id="chat-list" class="picker"></div>
+      </div>
+
+      <div id="tab-folders" hidden>
+        <div id="folder-list" class="picker"></div>
+        <p class="hint small pad">
+          Нажатие на папку отмечает все её чаты в списке. Повторное
+          нажатие снимает выбор.
+        </p>
+      </div>
+
+      <p id="chat-picked" class="hint pad">Выбрано: 0</p>
+      <button id="rescan" class="btn ghost">
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-refresh"/></svg>
+        Обновить список чатов
+      </button>
+      <p id="scan-note" class="hint center" hidden></p>
     </div>
 
-    <div id="tab-chats">
-      <input id="chat-search" class="field" type="text" placeholder="Поиск чата">
-      <div id="chat-list" class="picker"></div>
-      <p id="chat-picked" class="hint">Выбрано: 0</p>
-    </div>
-
-    <div id="tab-folders" hidden>
-      <div id="folder-list" class="picker"></div>
-      <p class="hint small">
-        Папка разворачивается в список чатов при каждой отправке — добавите
-        в неё чат в Telegram, и рассылка подхватит его после обновления
-        списка.
+    <!-- Шаг 2: что писать. -->
+    <div id="step-what" hidden>
+      <div class="section-head">
+        <h2 class="section-title">Сообщения</h2>
+        <span class="section-aside" id="variant-count"></span>
+      </div>
+      <div class="panel" id="variant-list"></div>
+      <button id="variant-add" class="btn ghost">
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-plus"/></svg>
+        Ещё вариант текста
+      </button>
+      <p class="hint small pad">
+        Несколько вариантов уходят вперемешку. Один и тот же текст,
+        разосланный по сотне чатов, ловится проверкой на совпадение —
+        это первое, на что смотрят.
       </p>
-    </div>
 
-    <button id="rescan" class="btn ghost"><svg class="ic" viewBox="0 0 24 24"><use href="#i-refresh"/></svg>Обновить список чатов</button>
-    <p id="scan-note" class="hint center" hidden></p>
-
-    <label class="label">Сообщение</label>
-    <div class="tabs">
-      <button class="ctab active" data-ctab="text">Текст</button>
-      <button class="ctab" data-ctab="saved">Из «Избранного»</button>
-    </div>
-
-    <div id="ctab-text">
-      <textarea id="campaign-text" class="field area" rows="5"
-                placeholder="Текст, который уйдёт в каждый чат"></textarea>
-      <p id="text-count" class="hint small"></p>
-    </div>
-
-    <div id="ctab-saved" hidden>
-      <p class="hint">
-        Отправьте нужное сообщение в «Избранное» того аккаунта, с которого
-        рассылаете, обновите список — и выберите его здесь. Уйдёт ровно
-        оно: фото, гифка, видео, кружок, премиум-стикер, премиум-эмодзи,
-        цитата, жирный и курсив.
-      </p>
+      <h2 class="section-title">Из «Избранного»</h2>
       <div id="material-list" class="picker"></div>
-      <p class="hint small">
-        Премиум-эмодзи и премиум-стикеры уходят, только если у самого
-        аккаунта есть Telegram Premium. У стикера не бывает подписи —
-        строка о боте к нему не добавляется.
+      <p class="hint small pad">
+        Отправьте сообщение в «Избранное» того аккаунта, с которого
+        рассылаете, и отметьте здесь: уйдёт ровно оно — фото, гифка,
+        видео, премиум-стикер, премиум-эмодзи, цитата. Отмеченные
+        материалы идут вариантами наравне с текстами.
       </p>
+      <p id="footer-note" class="hint small pad" hidden></p>
     </div>
 
-    <p id="footer-note" class="hint small" hidden></p>
+    <!-- Шаг 3: как часто и в каком порядке. -->
+    <div id="step-how" hidden>
+      <label class="label">Интервал между сообщениями</label>
+      <div id="intervals" class="chips"></div>
+      <p id="interval-note" class="hint small pad"></p>
 
-    <label class="label">Интервал между сообщениями</label>
-    <div id="intervals" class="chips"></div>
-    <p id="interval-note" class="hint small"></p>
+      <label class="label">Порядок вариантов</label>
+      <div class="tabs">
+        <button class="ptab active" data-pick="random">Вразнобой</button>
+        <button class="ptab" data-pick="order">По очереди</button>
+      </div>
+      <p class="hint small pad">
+        Вразнобой безопаснее: очередь предсказуема, и по ней рассылка
+        вычисляется почти так же легко, как по одному тексту.
+      </p>
+
+      <h2 class="section-title">Проверьте</h2>
+      <div class="panel" id="new-summary"></div>
+    </div>
 
     <p class="err" id="new-err" hidden></p>
-    <button id="campaign-start" class="btn primary">Запустить</button>
-    <button class="btn ghost" data-home>Отмена</button>
+    <div class="nav-row">
+      <button id="step-back" class="btn ghost">Назад</button>
+      <button id="step-next" class="btn primary">Далее</button>
+    </div>
   </section>
 
   <!-- Правка уже созданной рассылки. Чаты не трогаем: круг идёт, и
@@ -339,27 +367,32 @@
        пропустить. -->
   <section id="screen-edit" class="screen" hidden>
     <h2 class="section-title">Изменить рассылку</h2>
-    <p class="hint" id="edit-about"></p>
+    <p class="hint pad" id="edit-about"></p>
 
     <label class="label" for="edit-title">Название</label>
     <input id="edit-title" class="field" type="text" maxlength="60">
 
-    <label class="label">Сообщение</label>
-    <div class="tabs">
-      <button class="etab active" data-etab="text">Текст</button>
-      <button class="etab" data-etab="saved">Из «Избранного»</button>
+    <div class="section-head">
+      <h2 class="section-title">Сообщения</h2>
+      <span class="section-aside" id="edit-variant-count"></span>
     </div>
+    <div class="panel" id="edit-variants"></div>
+    <button id="edit-variant-add" class="btn ghost">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-plus"/></svg>
+      Ещё вариант текста
+    </button>
 
-    <div id="etab-text">
-      <textarea id="edit-text" class="field area" rows="5"></textarea>
-      <p id="edit-count" class="hint small"></p>
-    </div>
-    <div id="etab-saved" hidden>
-      <div id="edit-materials" class="picker"></div>
-    </div>
+    <h2 class="section-title">Из «Избранного»</h2>
+    <div id="edit-materials" class="picker"></div>
 
     <label class="label">Интервал</label>
     <div id="edit-intervals" class="chips"></div>
+
+    <label class="label">Порядок вариантов</label>
+    <div class="tabs">
+      <button class="etab active" data-pick="random">Вразнобой</button>
+      <button class="etab" data-pick="order">По очереди</button>
+    </div>
 
     <p class="err" id="edit-err" hidden></p>
     <button id="edit-save" class="btn primary">Сохранить</button>

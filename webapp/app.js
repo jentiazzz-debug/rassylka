@@ -761,40 +761,90 @@ function renderMain() {
 let editing = null;
 
 async function openEdit(campaign) {
+  const variants = campaign.variants || [];
   editing = {
     id: campaign.id,
     accountId: campaign.account_id,
-    content: campaign.content || 'text',
-    savedId: campaign.saved_id,
+    texts: variants.filter((v) => v.content !== 'saved').map((v) => v.text),
+    savedIds: new Set(
+      variants.filter((v) => v.content === 'saved').map((v) => v.saved_id),
+    ),
     interval: campaign.interval,
+    pick: campaign.pick || 'random',
   };
+  if (!editing.texts.length && !editing.savedIds.size) editing.texts = [''];
+
   fail('edit-err', '');
   $('edit-about').textContent =
     `${campaign.chats} ${plural(campaign.chats, 'чат', 'чата', 'чатов')} · ` +
     'список чатов не меняется — круг уже идёт';
   $('edit-title').value = campaign.title;
-  $('edit-text').value = campaign.text || '';
-  $('edit-count').textContent =
-    `${(campaign.text || '').length} из ${state.limits.max_text}`;
-  setEditTab(editing.content);
+  renderEditVariants();
+  setEditPick(editing.pick);
   renderEditIntervals();
   show('edit');
 
   hintInto($('edit-materials'), 'Загружаем…');
   await loadMaterials(editing.accountId);
-  renderMaterials($('edit-materials'), editing.savedId, (id) => {
-    editing.savedId = id;
-  });
+  renderMaterials($('edit-materials'), editing.savedIds, renderEditCount, true);
 }
 
-function setEditTab(name) {
-  if (!editing) return;
-  editing.content = name;
-  for (const tab of document.querySelectorAll('.etab')) {
-    tab.classList.toggle('active', tab.dataset.etab === name);
+function renderEditVariants() {
+  const box = $('edit-variants');
+  box.textContent = '';
+  editing.texts.forEach((value, index) => {
+    const row = document.createElement('div');
+    row.className = 'variant';
+
+    const area = document.createElement('textarea');
+    area.value = value;
+    area.placeholder = 'Текст, который уйдёт в чат';
+    area.oninput = () => {
+      editing.texts[index] = area.value;
+      renderEditCount();
+    };
+    row.appendChild(area);
+
+    if (editing.texts.length > 1) {
+      const drop = document.createElement('button');
+      drop.className = 'variant-drop';
+      drop.appendChild(icon('x', 'ic-s'));
+      drop.onclick = () => {
+        editing.texts.splice(index, 1);
+        renderEditVariants();
+      };
+      row.appendChild(drop);
+    }
+    box.appendChild(row);
+  });
+  renderEditCount();
+  $('edit-variant-add').disabled =
+    editing.texts.length >= state.limits.max_variants;
+}
+
+function editVariants() {
+  const out = editing.texts
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .map((text) => ({ content: 'text', text }));
+  for (const saved_id of editing.savedIds) {
+    out.push({ content: 'saved', saved_id });
   }
-  $('etab-text').hidden = name !== 'text';
-  $('etab-saved').hidden = name !== 'saved';
+  return out.slice(0, state.limits.max_variants);
+}
+
+function renderEditCount() {
+  const count = editVariants().length;
+  $('edit-variant-count').textContent = count
+    ? `${count} ${plural(count, 'вариант', 'варианта', 'вариантов')}`
+    : '';
+}
+
+function setEditPick(mode) {
+  editing.pick = mode;
+  for (const tab of document.querySelectorAll('.etab')) {
+    tab.classList.toggle('active', tab.dataset.pick === mode);
+  }
 }
 
 function renderEditIntervals() {
@@ -819,23 +869,18 @@ function renderEditIntervals() {
 async function saveEdit() {
   const button = $('edit-save');
   fail('edit-err', '');
-  const text = $('edit-text').value.trim();
-  if (editing.content === 'text' && !text) {
-    fail('edit-err', 'Напишите текст сообщения.');
-    return;
-  }
-  if (editing.content === 'saved' && !editing.savedId) {
-    fail('edit-err', 'Выберите сообщение из «Избранного».');
+  const variants = editVariants();
+  if (!variants.length) {
+    fail('edit-err', 'Добавьте текст или отметьте сообщение из «Избранного».');
     return;
   }
   const done = busy(button, 'Сохраняем…');
   const result = await api('/api/campaign/edit', {
     id: editing.id,
     title: $('edit-title').value.trim(),
-    text,
+    variants,
     interval: editing.interval,
-    content: editing.content,
-    saved_id: editing.savedId,
+    pick: editing.pick,
   });
   done();
   if (!result.ok) {
@@ -991,8 +1036,9 @@ const MATERIAL_ICONS = {
 let draft = null;
 let picker = { chats: [], folders: [], materials: [] };
 
-/** Общий список материалов: используется и при создании, и при правке. */
-function renderMaterials(box, selectedId, onPick) {
+/** Список материалов. `multi` — набор отмеченных (создание рассылки),
+ *  иначе одиночный выбор с колбэком (правка). */
+function renderMaterials(box, selected, onPick, multi) {
   box.textContent = '';
   if (!picker.materials.length) {
     hintInto(box, 'В «Избранном» этого аккаунта пока пусто. Отправьте туда ' +
@@ -1003,13 +1049,22 @@ function renderMaterials(box, selectedId, onPick) {
     const row = document.createElement('label');
     row.className = 'pick';
 
-    const radio = document.createElement('input');
-    radio.type = 'radio';
-    radio.name = box.id;
-    radio.checked = selectedId === material.msg_id;
-    radio.onchange = () => onPick(material.msg_id);
-    row.appendChild(radio);
-
+    const input = document.createElement('input');
+    input.type = multi ? 'checkbox' : 'radio';
+    input.name = box.id;
+    input.checked = multi
+      ? selected.has(material.msg_id)
+      : selected === material.msg_id;
+    input.onchange = () => {
+      if (multi) {
+        input.checked ? selected.add(material.msg_id)
+                      : selected.delete(material.msg_id);
+        if (onPick) onPick();
+      } else if (onPick) {
+        onPick(material.msg_id);
+      }
+    };
+    row.appendChild(input);
     row.appendChild(icon(MATERIAL_ICONS[material.kind] || 'text', 'pick-mark'));
 
     const title = document.createElement('span');
@@ -1021,10 +1076,14 @@ function renderMaterials(box, selectedId, onPick) {
   }
 }
 
+
 async function loadMaterials(accountId) {
   const result = await api('/api/materials', { account_id: accountId });
   picker.materials = result.ok ? result.materials : [];
 }
+
+const STEPS = ['where', 'what', 'how'];
+const STEP_LAST = STEPS.length - 1;
 
 function openNew() {
   const alive = state.accounts.filter((a) => a.status === 'ok');
@@ -1032,20 +1091,19 @@ function openNew() {
 
   draft = {
     accountId: alive[0].id,
-    source: 'chats',
     chatIds: new Set(),
-    folderId: null,
+    savedIds: new Set(),
+    texts: [''],
     interval: 900,
-    content: 'text',
-    savedId: null,
+    pick: 'random',
+    step: 0,
   };
-  $('campaign-text').value = '';
   $('chat-search').value = '';
   fail('new-err', '');
   $('scan-note').hidden = true;
 
   // Аккаунт спрашиваем, только когда их несколько: выбор из одного
-  // пункта — лишний вопрос на экране, где и так много полей.
+  // пункта — лишний вопрос на первом же шаге.
   const select = $('campaign-account');
   select.textContent = '';
   for (const account of alive) {
@@ -1059,15 +1117,167 @@ function openNew() {
 
   renderIntervals();
   renderFooterNote();
-  countText();
+  renderVariants();
+  setPick('random');
   setTab('chats');
-  setContentTab('text');
+  goStep(0);
   show('new');
   loadChats();
 }
 
+function goStep(index) {
+  draft.step = Math.max(0, Math.min(STEP_LAST, index));
+  fail('new-err', '');
+  for (let i = 0; i < STEPS.length; i++) {
+    $('step-' + STEPS[i]).hidden = i !== draft.step;
+  }
+  for (const tab of document.querySelectorAll('.step')) {
+    const at = Number(tab.dataset.step);
+    tab.classList.toggle('active', at === draft.step);
+    tab.classList.toggle('done', at < draft.step);
+  }
+  $('step-back').textContent = draft.step === 0 ? 'Отмена' : 'Назад';
+  $('step-next').textContent = draft.step === STEP_LAST ? 'Запустить' : 'Далее';
+  if (draft.step === STEP_LAST) renderSummary();
+  window.scrollTo(0, 0);
+}
+
+/** Что мешает уйти с текущего шага. Пустая строка — ничего.
+ *  Проверяем по шагам, а не всё сразу в конце: иначе человек узнаёт о
+ *  незаполненном первом шаге, уже дойдя до третьего. */
+function stepProblem(step) {
+  if (step === 0 && !draft.chatIds.size) return 'Выберите хотя бы один чат.';
+  if (step === 1 && !collectVariants().length) {
+    return 'Добавьте текст или отметьте сообщение из «Избранного».';
+  }
+  return '';
+}
+
+async function stepNext() {
+  const problem = stepProblem(draft.step);
+  if (problem) {
+    fail('new-err', problem);
+    return;
+  }
+  if (draft.step < STEP_LAST) {
+    goStep(draft.step + 1);
+    return;
+  }
+  await createCampaign();
+}
+
+function stepBack() {
+  if (draft.step === 0) {
+    refresh();
+    return;
+  }
+  goStep(draft.step - 1);
+}
+
+function jumpStep(index) {
+  // Вперёд — только через проверку, назад — свободно.
+  if (index > draft.step) {
+    for (let i = draft.step; i < index; i++) {
+      const problem = stepProblem(i);
+      if (problem) {
+        goStep(i);
+        fail('new-err', problem);
+        return;
+      }
+    }
+  }
+  goStep(index);
+}
+
+// --- варианты сообщения ------------------------------------------------
+
+/** Собрать варианты: непустые тексты плюс отмеченные материалы. */
+function collectVariants() {
+  const out = draft.texts
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .map((text) => ({ content: 'text', text }));
+  for (const saved_id of draft.savedIds) {
+    out.push({ content: 'saved', saved_id });
+  }
+  return out.slice(0, state.limits.max_variants);
+}
+
+function renderVariants() {
+  const box = $('variant-list');
+  box.textContent = '';
+
+  draft.texts.forEach((value, index) => {
+    const row = document.createElement('div');
+    row.className = 'variant';
+
+    const area = document.createElement('textarea');
+    area.value = value;
+    area.placeholder = index === 0
+      ? 'Текст, который уйдёт в чат'
+      : 'Другая формулировка того же';
+    area.oninput = () => {
+      draft.texts[index] = area.value;
+      renderVariantCount();
+    };
+    row.appendChild(area);
+
+    // Крестик только когда полей больше одного: у единственного поля он
+    // предлагал бы остаться совсем без сообщения.
+    if (draft.texts.length > 1) {
+      const drop = document.createElement('button');
+      drop.className = 'variant-drop';
+      drop.appendChild(icon('x', 'ic-s'));
+      drop.onclick = () => {
+        draft.texts.splice(index, 1);
+        renderVariants();
+      };
+      row.appendChild(drop);
+    }
+    box.appendChild(row);
+  });
+
+  renderVariantCount();
+  $('variant-add').disabled = draft.texts.length >= state.limits.max_variants;
+}
+
+function renderVariantCount() {
+  const count = collectVariants().length;
+  $('variant-count').textContent = count
+    ? `${count} ${plural(count, 'вариант', 'варианта', 'вариантов')}`
+    : '';
+}
+
+function addVariant() {
+  if (draft.texts.length >= state.limits.max_variants) return;
+  draft.texts.push('');
+  renderVariants();
+  haptic('light');
+}
+
+function setPick(mode) {
+  draft.pick = mode;
+  for (const tab of document.querySelectorAll('.ptab')) {
+    tab.classList.toggle('active', tab.dataset.pick === mode);
+  }
+  // Сводка на этом же шаге — она обязана показывать то, что выбрано, а
+  // не то, что было выбрано при входе на шаг.
+  if (draft.step === STEP_LAST) renderSummary();
+}
+
+function renderSummary() {
+  const variants = collectVariants();
+  const chats = draft.chatIds.size;
+  fillStats($('new-summary'), [
+    ['Чатов', chats],
+    ['Вариантов сообщения', variants.length],
+    ['Интервал', human(draft.interval)],
+    ['Круг займёт', human(chats * draft.interval)],
+    ['Порядок', draft.pick === 'order' ? 'по очереди' : 'вразнобой'],
+  ]);
+}
+
 function setTab(name) {
-  draft.source = name;
   for (const tab of document.querySelectorAll('.tab')) {
     tab.classList.toggle('active', tab.dataset.tab === name);
   }
@@ -1096,18 +1306,7 @@ async function loadChats() {
   renderChatList();
   renderFolders();
   await loadMaterials(draft.accountId);
-  renderMaterials($('material-list'), draft.savedId, (id) => {
-    draft.savedId = id;
-  });
-}
-
-function setContentTab(name) {
-  draft.content = name;
-  for (const tab of document.querySelectorAll('.ctab')) {
-    tab.classList.toggle('active', tab.dataset.ctab === name);
-  }
-  $('ctab-text').hidden = name !== 'text';
-  $('ctab-saved').hidden = name !== 'saved';
+  renderMaterials($('material-list'), draft.savedIds, renderVariantCount, true);
 }
 
 function renderChatList() {
@@ -1160,8 +1359,8 @@ function renderChatList() {
 
 function countPicked() {
   const count = draft.chatIds.size;
-  $('chat-picked').textContent =
-    `Выбрано: ${count}` + (count ? ` · круг займёт ${human(count * draft.interval)}` : '');
+  $('chat-picked').textContent = `Выбрано: ${count}`
+    + (count ? ` ${plural(count, 'чат', 'чата', 'чатов')}` : '');
 }
 
 function renderFolders() {
@@ -1171,16 +1370,20 @@ function renderFolders() {
     hintInto(box, 'Папок нет. Их создают в Telegram: Настройки → Папки с чатами.');
     return;
   }
-  for (const folder of picker.folders) {
-    const row = document.createElement('label');
-    row.className = 'pick';
 
-    const radio = document.createElement('input');
-    radio.type = 'radio';
-    radio.name = 'folder';
-    radio.checked = draft.folderId === folder.id;
-    radio.onchange = () => { draft.folderId = folder.id; };
-    row.appendChild(radio);
+  // Папка не выбирается «как папка» — по нажатию она отмечает все свои
+  // чаты в списке. Так видно, что именно уйдёт в рассылку, и лишнее
+  // можно снять галочкой: папка в Telegram нередко собрана не под
+  // рассылку, и слать во всё подряд человек обычно не хочет.
+  const known = new Set(picker.chats.map((chat) => chat.id));
+  for (const folder of picker.folders) {
+    const inList = folder.chat_ids.filter((id) => known.has(id));
+    const picked = inList.length
+      && inList.every((id) => draft.chatIds.has(id));
+
+    const row = document.createElement('button');
+    row.className = 'pick';
+    row.appendChild(icon('folder', 'pick-mark'));
 
     const title = document.createElement('span');
     title.className = 'pick-title';
@@ -1189,9 +1392,25 @@ function renderFolders() {
 
     const count = document.createElement('span');
     count.className = 'pick-kind';
-    count.textContent = `${folder.chats} ${plural(folder.chats, 'чат', 'чата', 'чатов')}`;
+    count.textContent = picked
+      ? 'выбрана'
+      : `${inList.length} ${plural(inList.length, 'чат', 'чата', 'чатов')}`;
     row.appendChild(count);
 
+    row.onclick = () => {
+      if (!inList.length) {
+        alertBox('В этой папке нет чатов из списка. Обновите список чатов.');
+        return;
+      }
+      // Повторное нажатие снимает выбор — иначе папку, нажатую по
+      // ошибке, пришлось бы разбирать галочка за галочкой.
+      if (picked) inList.forEach((id) => draft.chatIds.delete(id));
+      else inList.forEach((id) => draft.chatIds.add(id));
+      haptic('light');
+      setTab('chats');
+      renderChatList();
+      renderFolders();
+    };
     box.appendChild(row);
   }
 }
@@ -1209,7 +1428,7 @@ function renderIntervals() {
     chip.onclick = () => {
       draft.interval = seconds;
       renderIntervals();
-      countPicked();
+      if (draft.step === STEP_LAST) renderSummary();
     };
     box.appendChild(chip);
   }
@@ -1225,11 +1444,6 @@ function renderFooterNote() {
   note.textContent =
     'На бесплатном тарифе в конец каждого сообщения дописывается строка ' +
     'о том, каким ботом сделана рассылка.';
-}
-
-function countText() {
-  const length = $('campaign-text').value.length;
-  $('text-count').textContent = `${length} из ${state.limits.max_text}`;
 }
 
 async function rescan() {
@@ -1254,37 +1468,16 @@ async function rescan() {
 }
 
 async function createCampaign() {
-  const button = $('campaign-start');
+  const button = $('step-next');
   fail('new-err', '');
-
-  const text = $('campaign-text').value.trim();
-  if (draft.content === 'text' && !text) {
-    fail('new-err', 'Напишите текст сообщения.');
-    return;
-  }
-  if (draft.content === 'saved' && !draft.savedId) {
-    fail('new-err', 'Выберите сообщение из «Избранного».');
-    return;
-  }
-  if (draft.source === 'chats' && !draft.chatIds.size) {
-    fail('new-err', 'Выберите хотя бы один чат.');
-    return;
-  }
-  if (draft.source === 'folder' && !draft.folderId) {
-    fail('new-err', 'Выберите папку.');
-    return;
-  }
 
   const done = busy(button, 'Запускаем…');
   const result = await api('/api/campaign/create', {
     account_id: draft.accountId,
-    text,
-    interval: draft.interval,
-    source: draft.source,
-    folder_id: draft.folderId,
     chat_ids: [...draft.chatIds],
-    content: draft.content,
-    saved_id: draft.savedId,
+    variants: collectVariants(),
+    interval: draft.interval,
+    pick: draft.pick,
   });
   done();
   if (!result.ok) {
@@ -1462,35 +1655,41 @@ function wire() {
   $('tdata-send').onclick = uploadTdata;
   $('add-campaign').onclick = openNew;
   $('rescan').onclick = rescan;
-  $('campaign-start').onclick = createCampaign;
-  $('campaign-text').addEventListener('input', countText);
+  $('step-next').onclick = stepNext;
+  $('step-back').onclick = stepBack;
+  $('variant-add').onclick = addVariant;
   $('chat-search').addEventListener('input', renderChatList);
+  for (const tab of document.querySelectorAll('.step')) {
+    tab.onclick = () => jumpStep(Number(tab.dataset.step));
+  }
+  for (const tab of document.querySelectorAll('.ptab')) {
+    tab.onclick = () => setPick(tab.dataset.pick);
+  }
   $('campaign-account').addEventListener('change', () => {
     draft.accountId = Number($('campaign-account').value);
     // Чаты у каждого аккаунта свои: выбранное от прошлого аккаунта
     // здесь не просто лишнее, оно относится к чужому списку.
+    // Чаты и материалы у каждого аккаунта свои: выбранное от прошлого
+    // относится к чужому списку.
     draft.chatIds.clear();
-    draft.folderId = null;
-    draft.savedId = null;
+    draft.savedIds.clear();
     loadChats();
   });
   for (const tab of document.querySelectorAll('.tab')) {
     tab.onclick = () => setTab(tab.dataset.tab);
   }
-  for (const tab of document.querySelectorAll('.ctab')) {
-    tab.onclick = () => setContentTab(tab.dataset.ctab);
-  }
   for (const tab of document.querySelectorAll('.etab')) {
-    tab.onclick = () => setEditTab(tab.dataset.etab);
+    tab.onclick = () => setEditPick(tab.dataset.pick);
   }
   for (const item of document.querySelectorAll('.tab-item')) {
     item.onclick = () => setPane(item.dataset.pane);
   }
   $('edit-save').onclick = saveEdit;
-  $('edit-text').addEventListener('input', () => {
-    $('edit-count').textContent =
-      `${$('edit-text').value.length} из ${state.limits.max_text}`;
-  });
+  $('edit-variant-add').onclick = () => {
+    if (editing.texts.length >= state.limits.max_variants) return;
+    editing.texts.push('');
+    renderEditVariants();
+  };
 
   // Enter на телефонной клавиатуре — самый естественный способ
   // отправить короткое поле, и без этого человек ищет кнопку глазами.
