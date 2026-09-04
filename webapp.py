@@ -31,6 +31,7 @@ import accounts
 import broadcast
 import chats
 import config
+import cryptobot
 import db
 import handlers
 import legal
@@ -220,6 +221,7 @@ async def _state(user_id: int) -> dict:
             "max_variants": config.MAX_VARIANTS,
         },
         "support_url": config.SUPPORT_URL,
+        "is_admin": user_id in config.ADMIN_IDS,
         "mtproto_ready": config.mtproto_ready(),
         "tdata_ready": tdata.available(),
         "max_tdata_mb": config.MAX_TDATA_MB,
@@ -383,6 +385,11 @@ async def api_profile(request: web.Request, user: dict, data: dict) -> web.Respo
                 }
                 for pack in config.COIN_PACKS
             ],
+            "crypto_packs": [
+                {"coins": pack["coins"], "usd": pack["usd"]}
+                for pack in config.CRYPTO_PACKS
+            ] if cryptobot.ready() else [],
+            "coins_per_usd": config.COINS_PER_USD,
             "rub_packs": [
                 {"coins": pack["coins"], "rub": pack["rub"]}
                 for pack in config.RUB_PACKS
@@ -951,6 +958,24 @@ async def platega_callback(request: web.Request) -> web.Response:
 
 
 @authed
+async def api_crypto_invoice(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    """Счёт в USDT через @CryptoBot."""
+    if not cryptobot.ready():
+        return _fail("Оплата криптой сейчас недоступна.")
+    coins = _int(data.get("coins"))
+    if cryptobot.price_of(coins) is None:
+        return _fail("Такой пачки монет нет.")
+    try:
+        invoice = await cryptobot.create(int(user["id"]), coins)
+    except Exception as error:
+        log.exception("счёт CryptoBot на %s монет не создался", coins)
+        return _fail(f"Счёт не создался: {type(error).__name__}")
+    return web.json_response({"ok": True, "url": invoice["url"]})
+
+
+@authed
 async def api_rub_invoice(
     request: web.Request, user: dict, data: dict
 ) -> web.Response:
@@ -968,6 +993,118 @@ async def api_rub_invoice(
         log.exception("счёт Platega на %s монет не создался", coins)
         return _fail(f"Счёт не создался: {type(error).__name__}")
     return web.json_response({"ok": True, "url": invoice["url"]})
+
+
+# --- админка ----------------------------------------------------------
+
+
+def _is_admin(user: dict) -> bool:
+    return int(user.get("id") or 0) in config.ADMIN_IDS
+
+
+def admin_only(handler):
+    """Ручка только для владельца.
+
+    Проверка идёт по id из подписанной initData, а не по чему-то в теле
+    запроса: подделать её без токена бота нельзя. Чужим отвечаем 404, а
+    не 403 — незачем подтверждать, что такая ручка вообще есть.
+    """
+
+    @wraps(handler)
+    async def wrapper(request: web.Request, user: dict, data: dict):
+        if not _is_admin(user):
+            log.warning("чужой в админке: %s %s", user.get("id"), request.path)
+            raise web.HTTPNotFound()
+        return await handler(request, user, data)
+
+    return wrapper
+
+
+@authed
+@admin_only
+async def api_admin_find(request: web.Request, user: dict, data: dict) -> web.Response:
+    """Найти человека по id или нику."""
+    found = await db.find_users(str(data.get("query") or ""))
+    return web.json_response({
+        "ok": True,
+        "users": [
+            {"id": row["user_id"], "username": row["username"],
+             "name": row["name"], "coins": row["coins"],
+             "seen_at": row["seen_at"]}
+            for row in found
+        ],
+    })
+
+
+@authed
+@admin_only
+async def api_admin_user(request: web.Request, user: dict, data: dict) -> web.Response:
+    """Карточка человека: подписка, аккаунты, рассылки, платежи, журнал."""
+    card = await db.user_card(_int(data.get("id")))
+    if card is None:
+        return _fail("Такого человека нет.")
+    return web.json_response({"ok": True, "card": card})
+
+
+@authed
+@admin_only
+async def api_admin_grant(request: web.Request, user: dict, data: dict) -> web.Response:
+    """Выдать монеты или дни подписки — для разбора обращений.
+
+    Каждое начисление попадает в журнал монет с пометкой «от поддержки»:
+    через месяц никто не вспомнит, почему у человека лишние монеты, а по
+    журналу это видно.
+    """
+    target = _int(data.get("id"))
+    if not await db.get_user_exists(target):
+        return _fail("Такого человека нет.")
+
+    coins = _int(data.get("coins"))
+    days = _int(data.get("days"))
+    if not coins and not days:
+        return _fail("Нечего выдавать.")
+    if abs(coins) > 100000 or abs(days) > 3650:
+        return _fail("Слишком много — проверьте число.")
+
+    done = []
+    if coins:
+        balance = await db.add_coins(target, coins, "начисление от поддержки")
+        done.append(f"монет: {coins:+d}, баланс {balance}")
+    if days:
+        until = await db.grant_paid(target, days)
+        done.append(f"подписка продлена на {days} дн.")
+
+    log.info("админ %s: человеку %s — %s", user["id"], target, "; ".join(done))
+    if _bot is not None:
+        try:
+            await _bot.send_message(target, texts.from_support(coins, days))
+        except Exception as error:
+            log.debug("уведомление о начислении не ушло: %s", error)
+    return web.json_response({"ok": True, "done": "; ".join(done)})
+
+
+@authed
+@admin_only
+async def api_admin_campaign(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    """Остановить или продолжить чужую рассылку.
+
+    Нужно, когда на рассылку пожаловались: остановить её должен уметь
+    владелец сервиса, а не только сам человек.
+    """
+    campaign_id = _int(data.get("id"))
+    status = "running" if data.get("status") == "running" else "stopped"
+    if not await db.set_campaign_status_admin(campaign_id, status):
+        return _fail("Такой рассылки нет.")
+    log.info("админ %s: рассылка %s → %s", user["id"], campaign_id, status)
+    return web.json_response({"ok": True})
+
+
+@authed
+@admin_only
+async def api_admin_stats(request: web.Request, user: dict, data: dict) -> web.Response:
+    return web.json_response({"ok": True, "stats": await db.stats()})
 
 
 async def health(request: web.Request) -> web.Response:
@@ -993,6 +1130,12 @@ def build() -> web.Application:
             web.get("/paid", paid_page),
             web.post(config.PLATEGA_CALLBACK_PATH, platega_callback),
             web.post("/api/invoice/rub", api_rub_invoice),
+            web.post("/api/invoice/crypto", api_crypto_invoice),
+            web.post("/api/admin/find", api_admin_find),
+            web.post("/api/admin/user", api_admin_user),
+            web.post("/api/admin/grant", api_admin_grant),
+            web.post("/api/admin/campaign", api_admin_campaign),
+            web.post("/api/admin/stats", api_admin_stats),
             web.get("/{name:app\\.(?:js|css)}", asset),
             web.post("/api/state", api_state),
             web.post("/api/login/start", api_login_start),

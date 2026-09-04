@@ -35,11 +35,11 @@ function icon(name, cls) {
 
 const SCREENS = [
   'loading', 'main', 'phone', 'code', 'password', 'done', 'tdata', 'new',
-  'edit', 'log', 'outside',
+  'edit', 'log', 'topup', 'outside',
 ];
 
 /** Разделы главного экрана. */
-const PANES = ['profile', 'mail', 'accounts'];
+const PANES = ['profile', 'mail', 'accounts', 'admin'];
 let pane = 'profile';
 
 /** Экраны входа по номеру: с них «назад» отменяет вход на сервере. */
@@ -68,6 +68,7 @@ function show(name) {
 
 function setPane(name) {
   pane = name;
+  if (name === 'admin') renderAdmin();
   for (const item of PANES) $('pane-' + item).hidden = item !== name;
   for (const button of document.querySelectorAll('.tab-item')) {
     button.classList.toggle('active', button.dataset.pane === name);
@@ -491,57 +492,13 @@ function renderProfile() {
   if (state.support_url) support.href = state.support_url;
 
   renderPlans();
-  renderPacks();
-  renderRubPacks();
   renderLegal();
+  $('tab-admin').hidden = !state.is_admin;
 }
 
 /** Пачки за рубли. Блока нет вовсе, пока оплата рублями не настроена:
  *  пустой раздел «оплата недоступна» только путает. */
-function renderRubPacks() {
-  const packs = me.rub_packs || [];
-  $('rub-block').hidden = !packs.length;
-  if (!packs.length) return;
 
-  const box = $('rub-packs');
-  box.textContent = '';
-  for (const pack of packs) {
-    const button = document.createElement('button');
-    button.className = 'pack';
-
-    const count = document.createElement('div');
-    count.className = 'pack-count';
-    count.textContent = pack.coins;
-    const label = document.createElement('div');
-    label.className = 'pack-label';
-    label.textContent = me.coin_name;
-    const price = document.createElement('div');
-    price.className = 'pack-price';
-    price.textContent = Math.round(pack.rub) + ' ₽';
-
-    button.append(count, label, price);
-    button.onclick = () => payRub(pack, button);
-    box.appendChild(button);
-  }
-}
-
-async function payRub(pack, button) {
-  const done = busy(button, '…');
-  const result = await api('/api/invoice/rub', { coins: pack.coins });
-  done();
-  if (!result.ok) {
-    alertBox(result.error);
-    return;
-  }
-  // Ссылка ведёт на страницу платёжной организации — это внешний сайт,
-  // и открывать его надо во внешнем браузере, а не внутри мини-аппа:
-  // внутри не сработают ни приложение банка, ни возврат по СБП.
-  if (tg && tg.openLink) tg.openLink(result.url);
-  else window.open(result.url, '_blank');
-  // Монеты придут от платёжной системы отдельным подтверждением, а не
-  // из браузера: перечитываем состояние через полминуты.
-  setTimeout(refresh, 30000);
-}
 
 function renderLegal() {
   const box = $('legal-links');
@@ -676,29 +633,107 @@ function renderPlans() {
   }
 }
 
-/** Сколько монет собираемся купить. Выбор отдельно от нажатия «Оплатить»:
- *  так видно итог до того, как откроется счёт. */
-let packChoice = null;
+// --- пополнение --------------------------------------------------------
 
-function renderPacks() {
-  const box = $('packs');
+/** Что выбрано на экране пополнения: способ и количество монет. */
+let topup = { method: null, coins: null };
+
+/** Способы оплаты. Порядок неслучаен: звёзды не уводят из Telegram, и
+ *  для большинства это самый короткий путь. */
+function methods() {
+  const out = [{
+    id: 'stars', icon: 'star', title: 'Telegram Stars',
+    note: 'внутри Telegram, без сторонних сайтов',
+    packs: me.packs.map((p) => ({
+      coins: p.coins, price: p.stars, base: p.base,
+      popular: p.popular, label: p.stars + ' \u2605',
+    })),
+    custom: true,
+  }];
+  if ((me.rub_packs || []).length) {
+    out.push({
+      id: 'rub', icon: 'ruble', title: 'Карта или СБП',
+      note: 'оплата на странице платёжной организации',
+      packs: me.rub_packs.map((p) => ({
+        coins: p.coins, price: p.rub, label: Math.round(p.rub) + ' \u20bd',
+      })),
+    });
+  }
+  if ((me.crypto_packs || []).length) {
+    out.push({
+      id: 'crypto', icon: 'cryptobot', title: 'CryptoBot',
+      note: 'криптовалютой \u00b7 $1 = ' + me.coins_per_usd + ' ' + me.coin_name,
+      packs: me.crypto_packs.map((p) => ({
+        coins: p.coins, price: p.usd, label: '$' + p.usd,
+      })),
+    });
+  }
+  return out;
+}
+
+function openTopup() {
+  topup = { method: null, coins: null };
+  renderMethods();
+  $('topup-body').hidden = true;
+  show('topup');
+}
+
+function renderMethods() {
+  const box = $('pay-methods');
   box.textContent = '';
+  for (const method of methods()) {
+    const row = document.createElement('button');
+    row.className = 'row';
+    row.appendChild(icon(method.icon, 'lead'));
 
-  if (packChoice === null && me.packs.length) {
-    const popular = me.packs.find((p) => p.popular) || me.packs[0];
-    packChoice = popular.coins;
+    const body = document.createElement('div');
+    body.className = 'row-body';
+    const title = document.createElement('div');
+    title.className = 'row-title';
+    title.textContent = method.title;
+    const note = document.createElement('div');
+    note.className = 'row-note';
+    note.textContent = method.note;
+    body.append(title, note);
+    row.appendChild(body);
+    row.appendChild(icon('chevron'));
+
+    row.onclick = () => {
+      topup = { method: method.id, coins: null };
+      haptic('light');
+      renderMethods();
+      renderTopupPacks();
+    };
+    box.appendChild(row);
+  }
+}
+
+function currentMethod() {
+  return methods().find((m) => m.id === topup.method) || null;
+}
+
+function renderTopupPacks() {
+  const method = currentMethod();
+  $('topup-body').hidden = !method;
+  if (!method) return;
+
+  if (topup.coins === null) {
+    const popular = method.packs.find((p) => p.popular) || method.packs[0];
+    topup.coins = popular ? popular.coins : null;
   }
 
-  // Максимальная скидка — в заголовок раздела: она и есть повод
-  // посмотреть на пачки, а не пройти мимо.
-  const best = me.packs.reduce(
-    (max, p) => Math.max(max, p.base > p.stars
-      ? Math.round((1 - p.stars / p.base) * 100) : 0), 0);
-  $('packs-aside').textContent = best ? `скидка до ${best}%` : '';
+  $('topup-title').textContent = method.title;
+  const best = method.packs.reduce((max, p) => Math.max(max, p.base > p.price
+    ? Math.round((1 - p.price / p.base) * 100) : 0), 0);
+  $('topup-aside').textContent = best ? 'скидка до ' + best + '%' : '';
+  $('topup-custom').hidden = !method.custom;
+  $('topup-note').textContent = method.note;
 
-  for (const pack of me.packs) {
+  const box = $('topup-packs');
+  box.textContent = '';
+  for (const pack of method.packs) {
     const button = document.createElement('button');
-    button.className = 'pack' + (pack.coins === packChoice ? ' picked' : '');
+    button.className = 'pack' + (pack.coins === topup.coins ? ' picked' : '');
 
     if (pack.popular) {
       const tag = document.createElement('span');
@@ -706,12 +741,12 @@ function renderPacks() {
       tag.textContent = 'хит';
       button.appendChild(tag);
     }
-    const off = pack.base > pack.stars
-      ? Math.round((1 - pack.stars / pack.base) * 100) : 0;
+    const off = pack.base > pack.price
+      ? Math.round((1 - pack.price / pack.base) * 100) : 0;
     if (off) {
       const save = document.createElement('span');
       save.className = 'tag';
-      save.textContent = '−' + off + '%';
+      save.textContent = '\u2212' + off + '%';
       button.appendChild(save);
     }
 
@@ -721,7 +756,6 @@ function renderPacks() {
     const label = document.createElement('div');
     label.className = 'pack-label';
     label.textContent = me.coin_name;
-
     const price = document.createElement('div');
     price.className = 'pack-price';
     if (off) {
@@ -730,58 +764,78 @@ function renderPacks() {
       was.textContent = pack.base;
       price.appendChild(was);
     }
-    price.append(String(pack.stars), icon('star', 'ic-s'));
+    price.append(pack.label);
 
     button.append(count, label, price);
     button.onclick = () => {
-      packChoice = pack.coins;
-      renderPacks();
+      topup.coins = pack.coins;
+      renderTopupPacks();
       haptic('light');
     };
     box.appendChild(button);
   }
 
-  renderPayRow();
+  const chosen = method.packs.find((p) => p.coins === topup.coins);
+  $('topup-total').textContent = chosen ? chosen.label
+    : (method.id === 'stars' && topup.coins
+      ? topup.coins * me.custom.rate + ' \u2605' : '\u2014');
+  $('topup-pay').disabled = !topup.coins;
 }
 
-function renderPayRow() {
-  const total = $('pay-total');
-  total.textContent = '';
-  if (!packChoice) {
-    total.textContent = '—';
-    $('pay-stars').disabled = true;
-    return;
-  }
-  $('pay-stars').disabled = false;
-  total.append(String(priceOf(packChoice)), icon('star'));
-}
-
-/** Цена в звёздах: у готовой пачки своя (в ней бывает скидка), у своего
- *  количества — по обычному курсу. Та же логика, что на сервере. */
-function priceOf(coins) {
-  const pack = me.packs.find((p) => p.coins === coins);
-  return pack ? pack.stars : coins * me.custom.rate;
-}
-
-function askCustom() {
+function askTopupCustom() {
   const limits = me.custom;
   const raw = window.prompt(
-    `Сколько ${me.coin_name} купить? От ${limits.min} до ${limits.max}.`,
-    String(packChoice || limits.min),
+    'Сколько ' + me.coin_name + ' купить? От ' + limits.min
+      + ' до ' + limits.max + '.',
+    String(topup.coins || limits.min),
   );
   if (raw === null) return;
-  const coins = parseInt(String(raw).replace(/\D/g, ''), 10);
+  const coins = parseInt(String(raw).replace(/[^0-9]/g, ''), 10);
   if (!coins || coins < limits.min || coins > limits.max) {
-    alertBox(`Можно от ${limits.min} до ${limits.max} ${me.coin_name}.`);
+    alertBox('Можно от ' + limits.min + ' до ' + limits.max + ' '
+      + me.coin_name + '.');
     return;
   }
-  packChoice = coins;
-  renderPacks();
+  topup.coins = coins;
+  renderTopupPacks();
 }
 
-async function payStars() {
-  if (!packChoice) return;
-  await topUp({ coins: packChoice }, $('pay-stars'));
+async function payTopup() {
+  const method = currentMethod();
+  if (!method || !topup.coins) return;
+  const button = $('topup-pay');
+
+  if (method.id === 'stars') {
+    const done = busy(button, 'Открываем счёт…');
+    const result = await api('/api/invoice', { coins: topup.coins });
+    done();
+    if (!result.ok) return alertBox(result.error);
+    if (!tg || !tg.openInvoice) {
+      return alertBox('Ваша версия Telegram не умеет открывать счёт.');
+    }
+    // Ответ openInvoice — статус в браузере, и монеты по нему никто не
+    // начисляет: подтверждение приходит боту отдельным апдейтом.
+    tg.openInvoice(result.link, (status) => {
+      if (status === 'paid') {
+        haptic('success');
+        setTimeout(refresh, 1400);
+      } else if (status === 'failed') {
+        alertBox('Оплата не прошла.');
+      }
+    });
+    return;
+  }
+
+  const path = method.id === 'rub' ? '/api/invoice/rub' : '/api/invoice/crypto';
+  const done = busy(button, 'Открываем счёт…');
+  const result = await api(path, { coins: topup.coins });
+  done();
+  if (!result.ok) return alertBox(result.error);
+  // Внешняя платёжная страница: внутри мини-аппа не сработают ни
+  // приложение банка, ни возврат по СБП, ни кошелёк.
+  if (tg && tg.openLink) tg.openLink(result.url);
+  else window.open(result.url, '_blank');
+  setTimeout(refresh, 30000);
 }
 
 async function subscribe(plan, button) {
@@ -796,32 +850,6 @@ async function subscribe(plan, button) {
   await refresh();
 }
 
-async function topUp(pack, button) {
-  const done = busy(button, 'Открываем счёт…');
-  const result = await api('/api/invoice', { coins: pack.coins });
-  done();
-  if (!result.ok) {
-    alertBox(result.error);
-    return;
-  }
-  if (!tg || !tg.openInvoice) {
-    alertBox('Ваша версия Telegram не умеет открывать счёт. Обновите приложение.');
-    return;
-  }
-  // Ответ openInvoice — это статус в браузере, и монеты по нему никто не
-  // начисляет: настоящее подтверждение приходит боту от Telegram
-  // отдельным апдейтом. Здесь только показываем, что произошло, и
-  // перечитываем состояние.
-  tg.openInvoice(result.link, (status) => {
-    if (status === 'paid') {
-      haptic('success');
-      // Платёж доезжает до бота не мгновенно — даём ему секунду.
-      setTimeout(refresh, 1400);
-    } else if (status === 'failed') {
-      alertBox('Оплата не прошла.');
-    }
-  });
-}
 
 function renderMain() {
   renderSubscription();
@@ -1566,6 +1594,249 @@ async function createCampaign() {
   await refresh();
 }
 
+
+// --- админка -----------------------------------------------------------
+
+/* Раздел виден только владельцу, и это не единственная защита: сервер
+   проверяет id по подписанной initData и чужим отвечает 404. Прятать
+   вкладку — удобство, а не безопасность. */
+
+async function renderAdmin() {
+  if (!state.is_admin) return;
+  const result = await api('/api/admin/stats', {});
+  if (!result.ok) return;
+  const st = result.stats;
+  fillStats($('admin-stats'), [
+    ['Людей всего', st.users || 0],
+    ['Заходили за сутки', st.active_day || 0],
+    ['На пробном', st.on_trial || 0],
+    ['С оплатой', st.paid || 0],
+    ['Аккаунтов подключено', st.accounts || 0],
+    ['Из них живых', st.accounts_ok || 0],
+  ]);
+}
+
+async function adminFind() {
+  const button = $('admin-find');
+  const query = $('admin-query').value.trim();
+  if (!query) return;
+
+  const done = busy(button, 'Ищем…');
+  const result = await api('/api/admin/find', { query });
+  done();
+  if (!result.ok) return alertBox(result.error);
+
+  const box = $('admin-results');
+  box.textContent = '';
+  box.hidden = false;
+  $('admin-card').hidden = true;
+
+  if (!result.users.length) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.textContent = 'Никого не нашлось.';
+    box.appendChild(row);
+    return;
+  }
+
+  for (const person of result.users) {
+    const row = document.createElement('button');
+    row.className = 'row';
+    const body = document.createElement('div');
+    body.className = 'row-body';
+    const title = document.createElement('div');
+    title.className = 'row-title';
+    title.textContent = person.name || 'Без имени';
+    const note = document.createElement('div');
+    note.className = 'row-note';
+    note.textContent = (person.username ? '@' + person.username + ' · ' : '')
+      + 'ID ' + person.id + ' · ' + (person.coins || 0) + ' ' + me.coin_name;
+    body.append(title, note);
+    row.append(body, icon('chevron'));
+    row.onclick = () => adminOpen(person.id);
+    box.appendChild(row);
+  }
+}
+
+async function adminOpen(userId) {
+  const result = await api('/api/admin/user', { id: userId });
+  if (!result.ok) return alertBox(result.error);
+  const card = result.card;
+
+  const box = $('admin-card');
+  box.textContent = '';
+  box.hidden = false;
+
+  const head = document.createElement('h2');
+  head.className = 'section-title';
+  head.textContent = (card.user.name || 'Без имени')
+    + (card.user.username ? ' · @' + card.user.username : '');
+  box.appendChild(head);
+
+  const summary = document.createElement('div');
+  summary.className = 'panel';
+  const sub = card.subscription;
+  fillStats(summary, [
+    ['ID', card.user.user_id],
+    ['Монет', card.user.coins || 0],
+    ['Подписка', sub.kind === 'paid' ? 'оплачена, ' + sub.days_left + ' дн.'
+      : sub.kind === 'trial' ? 'пробная, ' + sub.days_left + ' дн.'
+      : 'кончилась'],
+    ['Аккаунтов', card.accounts.length],
+    ['Рассылок', card.campaigns.length],
+  ]);
+  box.appendChild(summary);
+
+  // Выдать монеты или дни — то, ради чего админка и нужна.
+  box.appendChild(sectionTitle('Помочь'));
+  const actions = document.createElement('div');
+  actions.className = 'panel';
+  actions.appendChild(adminGrantRow(userId, 'Выдать монеты', 'coins',
+    'Сколько монет начислить? Отрицательное число спишет.'));
+  actions.appendChild(adminGrantRow(userId, 'Продлить подписку', 'days',
+    'На сколько дней продлить? Отрицательное число сократит.'));
+  box.appendChild(actions);
+
+  if (card.accounts.length) {
+    box.appendChild(sectionTitle('Аккаунты'));
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    for (const account of card.accounts) {
+      const row = document.createElement('div');
+      row.className = 'row stat';
+      const left = document.createElement('span');
+      left.textContent = (account.name || account.phone)
+        + (account.source === 'tdata' ? ' · tdata' : '');
+      const right = document.createElement('span');
+      right.textContent = account.status === 'ok' ? 'работает'
+        : (account.note || 'не работает');
+      row.append(left, right);
+      panel.appendChild(row);
+    }
+    box.appendChild(panel);
+  }
+
+  if (card.campaigns.length) {
+    box.appendChild(sectionTitle('Рассылки'));
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    for (const campaign of card.campaigns) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const body = document.createElement('div');
+      body.className = 'row-body';
+      const title = document.createElement('div');
+      title.className = 'row-title';
+      title.textContent = campaign.title;
+      const note = document.createElement('div');
+      note.className = 'row-note';
+      note.textContent = campaign.status + ' · отправлено '
+        + campaign.sent_ok + ' · ошибок ' + campaign.sent_err
+        + (campaign.note ? ' · ' + campaign.note : '');
+      body.append(title, note);
+      row.appendChild(body);
+
+      const stop = document.createElement('button');
+      stop.className = 'btn small'
+        + (campaign.status === 'running' ? ' danger' : '');
+      stop.textContent = campaign.status === 'running' ? 'Стоп' : 'Пуск';
+      stop.onclick = async () => {
+        const answer = await api('/api/admin/campaign', {
+          id: campaign.id,
+          status: campaign.status === 'running' ? 'stopped' : 'running',
+        });
+        if (!answer.ok) return alertBox(answer.error);
+        haptic('success');
+        adminOpen(userId);
+      };
+      row.appendChild(stop);
+      panel.appendChild(row);
+    }
+    box.appendChild(panel);
+  }
+
+  if (card.coins.length) {
+    box.appendChild(sectionTitle('Монеты'));
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    fillStats(panel, card.coins.map((op) => [
+      op.reason, (op.delta > 0 ? '+' : '') + op.delta,
+    ]));
+    box.appendChild(panel);
+  }
+
+  if (card.invoices.length) {
+    box.appendChild(sectionTitle('Счета'));
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    fillStats(panel, card.invoices.map((inv) => [
+      inv.coins + ' ' + me.coin_name + ' · ' + inv.status,
+      Math.round(inv.rub),
+    ]));
+    box.appendChild(panel);
+  }
+
+  if (card.sends.length) {
+    box.appendChild(sectionTitle('Последние отправки'));
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    for (const send of card.sends) {
+      const row = document.createElement('div');
+      row.className = 'log-row';
+      row.appendChild(icon(send.ok ? 'check' : 'x',
+        'ic-s log-mark ' + (send.ok ? 'good' : 'bad')));
+      const chat = document.createElement('span');
+      chat.className = 'log-chat';
+      chat.textContent = send.title || '—';
+      if (!send.ok && send.error) {
+        const error = document.createElement('div');
+        error.className = 'log-error';
+        error.textContent = send.error;
+        chat.appendChild(error);
+      }
+      row.appendChild(chat);
+      panel.appendChild(row);
+    }
+    box.appendChild(panel);
+  }
+
+  window.scrollTo(0, 0);
+}
+
+function sectionTitle(text) {
+  const title = document.createElement('h2');
+  title.className = 'section-title';
+  title.textContent = text;
+  return title;
+}
+
+function adminGrantRow(userId, title, field, question) {
+  const row = document.createElement('button');
+  row.className = 'row';
+  const body = document.createElement('div');
+  body.className = 'row-body';
+  const name = document.createElement('div');
+  name.className = 'row-title';
+  name.textContent = title;
+  body.appendChild(name);
+  row.append(body, icon('chevron'));
+
+  row.onclick = async () => {
+    const raw = window.prompt(question, '');
+    if (raw === null) return;
+    const value = parseInt(String(raw).replace(/[^0-9-]/g, ''), 10);
+    if (!value) return;
+    const payload = { id: userId };
+    payload[field] = value;
+    const result = await api('/api/admin/grant', payload);
+    if (!result.ok) return alertBox(result.error);
+    haptic('success');
+    alertBox(result.done);
+    adminOpen(userId);
+  };
+  return row;
+}
+
 // --- диалоги ----------------------------------------------------------
 
 /* Свои диалоги Telegram выглядят родными, но есть не во всех версиях
@@ -1727,8 +1998,13 @@ function wire() {
     button.onclick = refresh;
   }
 
-  $('pack-custom').onclick = askCustom;
-  $('pay-stars').onclick = payStars;
+  $('admin-find').onclick = adminFind;
+  $('admin-query').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') adminFind();
+  });
+  $('open-topup').onclick = openTopup;
+  $('topup-custom').onclick = askTopupCustom;
+  $('topup-pay').onclick = payTopup;
   $('add-tdata').onclick = openTdata;
   $('tdata-send').onclick = uploadTdata;
   $('add-campaign').onclick = openNew;

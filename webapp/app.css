@@ -24,23 +24,24 @@
  */
 
 :root {
-  --ink: #12141a;
-  --ink-2: #565d6b;
-  --ink-3: #8d94a2;
+  --ink: #0e1830;
+  --ink-2: #4a5a7a;
+  --ink-3: #8496b5;
 
   /* Стекло. Заливка намеренно жидкая: панель должна пропускать фон,
      иначе это просто белый прямоугольник. */
-  --glass: rgba(255, 255, 255, .34);
-  --glass-edge: rgba(255, 255, 255, .62);
-  --hairline: rgba(18, 20, 26, .07);
+  --glass: rgba(255, 255, 255, .38);
+  --glass-edge: rgba(255, 255, 255, .7);
+  --hairline: rgba(20, 60, 130, .09);
 
-  --accent: #12141a;
-  --accent-soft: rgba(18, 20, 26, .05);
+  --accent: #0b62e4;
+  --accent-2: #2f9bff;
+  --accent-soft: rgba(11, 98, 228, .07);
   --danger: #c8372d;
   --ok: #1f7a4d;
   --warn: #9a6412;
 
-  --shadow: 0 20px 48px rgba(20, 26, 44, .13), 0 2px 8px rgba(20, 26, 44, .05);
+  --shadow: 0 20px 48px rgba(20, 60, 130, .14), 0 2px 8px rgba(20, 60, 130, .06);
   --blur: saturate(200%) blur(30px);
 
   --radius: 22px;
@@ -49,7 +50,7 @@
 
 * { box-sizing: border-box; }
 
-html { background: #dde3ee; }
+html { background: #dbe8fb; }
 
 body {
   margin: 0;
@@ -58,7 +59,7 @@ body {
         Roboto, "Helvetica Neue", sans-serif;
   letter-spacing: -.01em;
   -webkit-font-smoothing: antialiased;
-  background: #dde3ee;
+  background: #dbe8fb;
   min-height: 100vh;
   padding-bottom: env(safe-area-inset-bottom, 0);
 }
@@ -69,24 +70,57 @@ body {
 
    Отдельным закреплённым слоем, а не background-attachment: fixed —
    тот в WebView известен рывками и пустыми кадрами при прокрутке. */
-body::before {
+body::before,
+body::after {
   content: "";
   position: fixed;
-  inset: 0;
+  inset: -25%;
   z-index: -1;
   pointer-events: none;
-  /* Пятна мелкие и контрастные намеренно. Крупные и мягкие размытие в
-     30 пикселей усредняет в ровную заливку — под панелью во всю ширину
-     от них не остаётся ничего. */
+  will-change: transform;
+}
+
+/* Нижний слой: голубые и белые пятна. Мелкие и контрастные намеренно —
+   крупные и мягкие размытие в 30 пикселей усредняет в ровную заливку, и
+   под панелью во всю ширину от них не остаётся ничего. */
+body::before {
   background:
-    radial-gradient(260px 220px at 12% 6%, #ffffff 0%, rgba(255,255,255,0) 70%),
-    radial-gradient(240px 200px at 88% 12%, #93a6c6 0%, rgba(147,166,198,0) 72%),
-    radial-gradient(300px 240px at 22% 34%, #a6b6d3 0%, rgba(166,182,211,0) 70%),
-    radial-gradient(260px 220px at 92% 46%, #ffffff 0%, rgba(255,255,255,0) 68%),
-    radial-gradient(280px 240px at 30% 66%, #ffffff 0%, rgba(255,255,255,0) 68%),
-    radial-gradient(300px 250px at 84% 82%, #97a9c9 0%, rgba(151,169,201,0) 70%),
-    radial-gradient(260px 220px at 8% 96%, #ffffff 0%, rgba(255,255,255,0) 68%),
-    linear-gradient(166deg, #eef2f9 0%, #dbe2ee 50%, #c6d1e4 100%);
+    radial-gradient(300px 260px at 18% 12%, #ffffff 0%, rgba(255,255,255,0) 70%),
+    radial-gradient(280px 240px at 82% 8%, #7db6ff 0%, rgba(125,182,255,0) 72%),
+    radial-gradient(340px 280px at 26% 40%, #a9d0ff 0%, rgba(169,208,255,0) 70%),
+    radial-gradient(300px 250px at 88% 52%, #ffffff 0%, rgba(255,255,255,0) 68%),
+    radial-gradient(320px 270px at 34% 74%, #ffffff 0%, rgba(255,255,255,0) 68%),
+    radial-gradient(340px 290px at 80% 88%, #6fa8f5 0%, rgba(111,168,245,0) 70%),
+    linear-gradient(165deg, #f2f8ff 0%, #d9e8fb 48%, #bcd7f7 100%);
+  animation: drift-a 26s ease-in-out infinite alternate;
+}
+
+/* Верхний слой — перелив. Он и даёт то самое «переливается»: два
+   медленных движения в противофазе непрерывно меняют картинку под
+   стеклом, и блики на кромках панелей живут вместе с ней. */
+body::after {
+  background:
+    radial-gradient(420px 340px at 70% 20%, rgba(90, 160, 255, .5) 0%, rgba(90,160,255,0) 68%),
+    radial-gradient(380px 320px at 20% 60%, rgba(255, 255, 255, .65) 0%, rgba(255,255,255,0) 66%),
+    radial-gradient(460px 380px at 60% 92%, rgba(140, 200, 255, .45) 0%, rgba(140,200,255,0) 70%);
+  animation: drift-b 34s ease-in-out infinite alternate;
+}
+
+@keyframes drift-a {
+  from { transform: translate3d(-3%, -2%, 0) scale(1.05); }
+  to   { transform: translate3d(3%, 3%, 0) scale(1.14); }
+}
+
+@keyframes drift-b {
+  from { transform: translate3d(4%, 2%, 0) scale(1.12) rotate(0deg); }
+  to   { transform: translate3d(-4%, -3%, 0) scale(1.02) rotate(6deg); }
+}
+
+/* Движущийся фон под полупрозрачными панелями — это непрерывная
+   перерисовка. Тем, кто выключил анимации в системе, она не нужна, и
+   на слабых устройствах тоже: там фон просто стоит. */
+@media (prefers-reduced-motion: reduce) {
+  body::before, body::after { animation: none; }
 }
 
 #app { padding: 20px 16px 28px; max-width: 560px; margin: 0 auto; }
@@ -178,7 +212,7 @@ body::before {
 /* Где backdrop-filter не поддерживается, жидкая заливка превращается в
    мутное пятно — делаем её плотной. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .panel, #tabbar { background: rgba(255, 255, 255, .9); }
+  .panel, #tabbar { background: rgba(255, 255, 255, .92); }
 }
 
 /* Строка внутри панели. Разделены волосяной линией, а не промежутком:
@@ -235,7 +269,7 @@ button.row:disabled { opacity: .5; cursor: default; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(160deg, #2b303a, #12141a);
+  background: linear-gradient(160deg, var(--accent-2), var(--accent));
   color: #fff;
   font-size: 24px;
   font-weight: 600;
@@ -312,7 +346,7 @@ button.row:disabled { opacity: .5; cursor: default; }
   content: "";
   position: absolute;
   inset: 5px;
-  border: 1.5px solid var(--ink);
+  border: 1.5px solid var(--accent);
   border-radius: 15px;
   pointer-events: none;
 }
@@ -382,10 +416,10 @@ button.row:disabled { opacity: .5; cursor: default; }
 .btn:disabled { opacity: .4; cursor: default; transform: none; }
 
 .btn.primary {
-  background: linear-gradient(178deg, #2a2f39 0%, #12141a 100%);
+  background: linear-gradient(178deg, var(--accent-2) 0%, var(--accent) 100%);
   color: #fff;
-  box-shadow: 0 10px 24px rgba(18, 20, 26, .24),
-              inset 0 1px 0 rgba(255, 255, 255, .14);
+  box-shadow: 0 10px 26px rgba(11, 98, 228, .34),
+              inset 0 1px 0 rgba(255, 255, 255, .3);
 }
 
 /* Единственное цветное пятно на экране. Звёзды у Telegram жёлтые, и
@@ -439,8 +473,8 @@ button.row:disabled { opacity: .5; cursor: default; }
 .field::placeholder { color: var(--ink-3); }
 .field:focus {
   outline: none;
-  border-color: rgba(18, 20, 26, .3);
-  box-shadow: 0 0 0 3px rgba(18, 20, 26, .06);
+  border-color: var(--accent-2);
+  box-shadow: 0 0 0 3px rgba(47, 155, 255, .18);
 }
 .field.code { letter-spacing: .38em; text-align: center; font-size: 21px; font-weight: 600; }
 .area { resize: vertical; min-height: 104px; font-family: inherit; }
@@ -451,7 +485,7 @@ input[type="file"].field::file-selector-button {
   padding: 8px 13px;
   border: 0;
   border-radius: 10px;
-  background: linear-gradient(178deg, #2a2f39, #12141a);
+  background: linear-gradient(178deg, var(--accent-2), var(--accent));
   color: #fff;
   font: inherit;
   font-weight: 600;
@@ -525,7 +559,7 @@ input[type="file"].field::file-selector-button {
   font-weight: 600;
   box-shadow: 0 4px 14px rgba(20, 26, 44, .09);
 }
-.step.active b { background: var(--ink); color: #fff; }
+.step.active b { background: var(--accent); color: #fff; }
 .step.done b { background: var(--ok); color: #fff; }
 
 .nav-row { display: flex; gap: 9px; }
@@ -575,7 +609,7 @@ input[type="file"].field::file-selector-button {
   transition: all .14s ease;
 }
 .chip.active {
-  background: linear-gradient(178deg, #2a2f39, #12141a);
+  background: linear-gradient(178deg, var(--accent-2), var(--accent));
   color: #fff;
   border-color: transparent;
   font-weight: 600;

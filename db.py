@@ -183,6 +183,9 @@ CREATE TABLE IF NOT EXISTS invoices (
     coins          INTEGER NOT NULL,
     rub            REAL    NOT NULL,
     status         TEXT    NOT NULL DEFAULT 'pending',
+    -- platega | crypto: у счетов разные способы проверки, и сверка
+    -- каждого провайдера ходит только за своими.
+    provider       TEXT    NOT NULL DEFAULT 'platega',
     created_at     INTEGER NOT NULL,
     closed_at      INTEGER NOT NULL DEFAULT 0
 );
@@ -308,6 +311,10 @@ async def _migrate() -> None:
         "users", "ref_by", "ALTER TABLE users ADD COLUMN ref_by INTEGER"
     )
     await _ensure_column(
+        "invoices", "provider",
+        "ALTER TABLE invoices ADD COLUMN provider TEXT NOT NULL DEFAULT 'platega'",
+    )
+    await _ensure_column(
         "campaigns", "pick",
         "ALTER TABLE campaigns ADD COLUMN pick TEXT NOT NULL DEFAULT 'random'",
     )
@@ -415,6 +422,10 @@ async def subscription(user_id: int) -> Subscription:
     return Subscription(kind="expired", until=max(paid_until, trial_until))
 
 
+#: Псевдоним: в карточке админки имя `subscription` занято ключом словаря.
+subscription_of = None  # проставляется ниже, после определения subscription
+
+
 async def grant_paid(user_id: int, days: int) -> int:
     """Продлить платную подписку. Возвращает новую дату конца.
 
@@ -512,16 +523,18 @@ async def coin_history(user_id: int, limit: int = 20) -> list[dict]:
 
 
 async def open_invoice(transaction_id: str, order_id: str, user_id: int,
-                       coins: int, rub: float) -> None:
+                       coins: int, rub: float,
+                       provider: str = "platega") -> None:
     """Записать выставленный счёт до того, как человек пойдёт платить."""
     await _conn().execute(
         """
         INSERT INTO invoices (transaction_id, order_id, user_id, coins, rub,
-                              status, created_at)
-        VALUES (?, ?, ?, ?, ?, 'pending', ?)
+                              status, provider, created_at)
+        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
         ON CONFLICT (transaction_id) DO NOTHING
         """,
-        (transaction_id, order_id, user_id, coins, rub, int(time.time())),
+        (transaction_id, order_id, user_id, coins, rub, provider,
+         int(time.time())),
     )
     await _conn().commit()
 
@@ -1404,6 +1417,91 @@ async def account_pause(account_id: int) -> tuple[int, str] | None:
     return int(row["until"]), row["reason"] or ""
 
 
+# --- админка: разбор обращений ----------------------------------------
+
+
+async def get_user_exists(user_id: int) -> bool:
+    row = await _fetchone("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+    return row is not None
+
+
+async def find_users(query: str, limit: int = 10) -> list[dict]:
+    """Найти людей по id или нику. Для разбора обращений в поддержку."""
+    query = (query or "").strip().lstrip("@")
+    if not query:
+        return []
+    if query.isdigit():
+        rows = await _fetchall(
+            "SELECT * FROM users WHERE user_id = ?", (int(query),)
+        )
+    else:
+        rows = await _fetchall(
+            "SELECT * FROM users WHERE username LIKE ? ORDER BY seen_at DESC "
+            "LIMIT ?",
+            (f"%{query}%", limit),
+        )
+    return [dict(row) for row in rows]
+
+
+async def user_card(user_id: int) -> dict | None:
+    """Всё про человека одним куском: чем помогать, видно сразу."""
+    row = await _fetchone("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    if row is None:
+        return None
+    subscription = await subscription_of(user_id)
+    return {
+        "user": dict(row),
+        "subscription": {
+            "kind": subscription.kind,
+            "until": subscription.until,
+            "days_left": subscription.days_left,
+        },
+        "accounts": [
+            {"id": a.id, "phone": a.phone, "name": a.title,
+             "status": a.status, "note": a.note, "source": a.source}
+            for a in await accounts(user_id)
+        ],
+        "campaigns": [
+            {"id": c.id, "title": c.title, "status": c.status,
+             "sent_ok": c.sent_ok, "sent_err": c.sent_err, "note": c.note}
+            for c in await campaigns(user_id)
+        ],
+        "coins": await coin_history(user_id, 10),
+        "payments": [
+            dict(r) for r in await _fetchall(
+                "SELECT charge_id, stars, days, payload, created_at FROM payments "
+                "WHERE user_id = ? ORDER BY created_at DESC LIMIT 10",
+                (user_id,),
+            )
+        ],
+        "invoices": [
+            dict(r) for r in await _fetchall(
+                "SELECT transaction_id, coins, rub, status, created_at "
+                "FROM invoices WHERE user_id = ? ORDER BY created_at DESC LIMIT 10",
+                (user_id,),
+            )
+        ],
+        "sends": [
+            dict(r) for r in await _fetchall(
+                "SELECT s.title, s.ok, s.error, s.created_at FROM sends s "
+                "JOIN campaigns c ON c.id = s.campaign_id "
+                "WHERE c.user_id = ? ORDER BY s.created_at DESC LIMIT 15",
+                (user_id,),
+            )
+        ],
+    }
+
+
+async def set_campaign_status_admin(campaign_id: int, status: str) -> bool:
+    """Остановить или продолжить чужую рассылку — из админки."""
+    cursor = await _conn().execute(
+        "UPDATE campaigns SET status = ?, next_run_at = ? WHERE id = ?",
+        (status, int(time.time()), campaign_id),
+    )
+    await _conn().commit()
+    return cursor.rowcount > 0
+
+
 # --- статистика для админа --------------------------------------------
 
 
@@ -1446,3 +1544,7 @@ async def _fetchone(sql: str, args: tuple = ()) -> aiosqlite.Row | None:
 async def _fetchall(sql: str, args: tuple = ()) -> list[aiosqlite.Row]:
     async with _conn().execute(sql, args) as cursor:
         return list(await cursor.fetchall())
+
+
+# Псевдоним для админки: см. комментарий выше.
+subscription_of = subscription

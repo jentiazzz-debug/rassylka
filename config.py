@@ -263,6 +263,40 @@ def platega_ready() -> bool:
     return bool(PLATEGA_MERCHANT and PLATEGA_SECRET)
 
 
+# --- CryptoBot: оплата криптой ----------------------------------------
+
+#: Токен приложения из @CryptoBot: Crypto Pay → Create App.
+CRYPTO_TOKEN = (os.getenv("CRYPTO_PAY_TOKEN") or "").strip()
+CRYPTO_API = (
+    os.getenv("CRYPTO_PAY_API") or "https://pay.crypt.bot"
+).strip().rstrip("/")
+
+#: Сколько монет даёт доллар.
+COINS_PER_USD = max(1, _int("COINS_PER_USD", "50"))
+
+
+def _crypto_packs(raw: str) -> list[dict]:
+    """Пачки за доллары: «доллары» или «доллары:монеты»."""
+    out: list[dict] = []
+    for chunk in raw.replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        usd, _, coins = chunk.partition(":")
+        try:
+            price = float(usd)
+        except ValueError:
+            continue
+        amount = int(coins) if coins.strip().isdigit() else round(price * COINS_PER_USD)
+        if amount > 0 and price > 0:
+            out.append({"usd": round(price, 2), "coins": amount})
+    return out
+
+
+#: По умолчанию 1, 5, 10 и 25 долларов по курсу COINS_PER_USD.
+CRYPTO_PACKS = _crypto_packs(os.getenv("CRYPTO_PACKS") or "1,5,10,25")
+
+
 # --- документы и реквизиты --------------------------------------------
 
 #: Кто оказывает услугу. Без этих данных документы не годятся ни для

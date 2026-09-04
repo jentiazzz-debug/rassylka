@@ -123,6 +123,15 @@ def rub_payment_done(coins: int, rub: float, balance: int) -> str:
     )
 
 
+def crypto_payment_done(coins: int, usd: float, balance: int) -> str:
+    return (
+        "✅ <b>Оплата прошла</b>\n\n"
+        f"Начислено {coins} {escape(config.COIN_NAME)} за ${usd:.2f}.\n"
+        f"Баланс: {coins_line(balance)}.\n\n"
+        "Подписка покупается за монеты — в приложении."
+    )
+
+
 def subscribed(days: int, price: int, until: int, balance: int) -> str:
     return (
         "✅ <b>Подписка активна</b>\n\n"
@@ -186,6 +195,19 @@ def documents(base: str) -> str:
         f'• <a href="{escape(base)}/privacy">Политика конфиденциальности</a>\n'
         f'• <a href="{escape(base)}/tariffs">Тарифы и что входит в услугу</a>\n'
         f'• <a href="{escape(base)}/support">Поддержка и реквизиты</a>'
+    )
+
+
+def from_support(coins: int, days: int) -> str:
+    parts = []
+    if coins:
+        parts.append(f"{coins:+d} {escape(config.COIN_NAME)}")
+    if days:
+        parts.append(f"подписка продлена на {days} дн.")
+    return (
+        "🛟 <b>Поддержка внесла изменения</b>\n\n"
+        + ", ".join(parts)
+        + "\n\nЕсли что-то осталось не так — напишите нам."
     )
 
 

@@ -136,6 +136,20 @@
       <path d="M3.6 6.6a1.8 1.8 0 0 1 1.8-1.8h3.4l2 2.4h7.8a1.8 1.8 0 0 1 1.8 1.8v8.4a1.8 1.8 0 0 1-1.8 1.8H5.4a1.8 1.8 0 0 1-1.8-1.8z"/>
     </g>
     <g id="i-chevron"><path d="M9.5 5.5l6.5 6.5-6.5 6.5"/></g>
+    <g id="i-ruble">
+      <path d="M8.5 20V4.6h4.9a4 4 0 0 1 0 8H8.5"/>
+      <path d="M6.4 16.2h8.2"/>
+    </g>
+    <!-- CryptoBot: его знак — синий кружок с бумажным самолётиком. -->
+    <g id="i-cryptobot">
+      <circle cx="12" cy="12" r="9"/>
+      <path d="M7.6 12.1l8.6-3.4-2.3 8.2-2.4-2.6-2.2 1.6.2-2.4z"/>
+    </g>
+    <g id="i-wallet">
+      <path d="M4 8.4A2.4 2.4 0 0 1 6.4 6h11.2A2.4 2.4 0 0 1 20 8.4v9.2a2.4 2.4 0 0 1-2.4 2.4H6.4A2.4 2.4 0 0 1 4 17.6z"/>
+      <path d="M4 10.4h16"/>
+      <path d="M16.4 14.6h.01"/>
+    </g>
   </defs>
 </svg>
 
@@ -183,39 +197,13 @@
       доступ к рассылкам.
     </p>
 
-    <div class="section-head">
-      <h2 class="section-title">Пополнить монеты</h2>
-      <span class="section-aside" id="packs-aside"></span>
-    </div>
-    <div class="panel">
-      <div class="grid" id="packs"></div>
-      <button id="pack-custom" class="row row-sep">
-        <span class="row-body"><span class="row-title">Своё количество</span></span>
-        <svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg>
-      </button>
-      <div class="row pay-row">
-        <span class="hint">К оплате</span>
-        <span class="pay-total" id="pay-total"></span>
-      </div>
-    </div>
-    <button id="pay-stars" class="btn stars">Оплатить Stars</button>
+    <button id="open-topup" class="btn primary">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-wallet"/></svg>
+      Пополнить баланс
+    </button>
     <p class="hint small pad">
-      Оплата звёздами Telegram — внутри приложения, без сторонних сайтов.
+      Telegram Stars, банковская карта, СБП или криптовалюта.
     </p>
-
-    <div id="rub-block" hidden>
-      <div class="section-head">
-        <h2 class="section-title">Оплата рублями</h2>
-        <span class="section-aside">картой или СБП</span>
-      </div>
-      <div class="panel">
-        <div class="grid" id="rub-packs"></div>
-      </div>
-      <p class="hint small pad">
-        Оплата проходит на странице платёжной организации. Данные карты
-        вводятся там и нам не передаются.
-      </p>
-    </div>
 
     <h2 class="section-title">Приглашайте друзей</h2>
     <div class="panel" id="referral"></div>
@@ -275,6 +263,10 @@
     </button>
     <button class="tab-item" data-pane="mail">
       <svg class="ic" viewBox="0 0 24 24"><use href="#i-megaphone"/></svg>Рассылки
+    </button>
+    <button class="tab-item" data-pane="admin" id="tab-admin" hidden>
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-shield"/></svg>
+      Админ
     </button>
     <button class="tab-item" data-pane="accounts">
       <svg class="ic" viewBox="0 0 24 24"><use href="#i-key"/></svg>Аккаунты
@@ -416,12 +408,59 @@
     <button class="btn ghost" data-home>Отмена</button>
   </section>
 
+  <!-- Пополнение. Способ выбирается первым: пачки у каждого свои, и
+       показывать три сетки подряд — это та самая простыня, из-за
+       которой в профиле ничего не читалось. -->
+  <section id="screen-topup" class="screen" hidden>
+    <h2 class="section-title">Чем пополнить</h2>
+    <div class="panel" id="pay-methods"></div>
+
+    <div id="topup-body" hidden>
+      <div class="section-head">
+        <h2 class="section-title" id="topup-title">Сколько</h2>
+        <span class="section-aside" id="topup-aside"></span>
+      </div>
+      <div class="panel">
+        <div class="grid" id="topup-packs"></div>
+        <button id="topup-custom" class="row row-sep" hidden>
+          <span class="row-body"><span class="row-title">Своё количество</span></span>
+          <svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg>
+        </button>
+        <div class="row pay-row">
+          <span class="hint">К оплате</span>
+          <span class="pay-total" id="topup-total">—</span>
+        </div>
+      </div>
+      <button id="topup-pay" class="btn primary">Оплатить</button>
+      <p class="hint small pad" id="topup-note"></p>
+    </div>
+
+    <button class="btn ghost" data-home>Назад</button>
+  </section>
+
   <!-- Журнал отправок одной рассылки. -->
   <section id="screen-log" class="screen" hidden>
     <h2 class="section-title" id="log-title">Журнал</h2>
     <div class="panel" id="log-list"></div>
     <p id="log-empty" class="hint" hidden>Пока ничего не отправлено.</p>
     <button class="btn ghost" data-home>Назад</button>
+  <!-- Админка: разбор обращений. Видна только владельцу. -->
+  <div id="pane-admin" class="pane" hidden>
+    <h2 class="section-title">Сводка</h2>
+    <div class="panel" id="admin-stats"></div>
+
+    <h2 class="section-title">Найти человека</h2>
+    <input id="admin-query" class="field" type="text"
+           placeholder="ID или @ник">
+    <button id="admin-find" class="btn primary">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+      Искать
+    </button>
+    <div class="panel" id="admin-results" hidden></div>
+
+    <div id="admin-card" hidden></div>
+  </div>
+
   </section>
 
   <!-- Шаг 1: номер. -->

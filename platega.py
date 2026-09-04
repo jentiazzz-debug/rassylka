@@ -240,6 +240,8 @@ async def reconcile(bot) -> int:
         return 0
     done = 0
     for invoice in await db.pending_invoices(max_age=86400):
+        if str(invoice.get("provider") or "platega") != "platega":
+            continue
         try:
             state = await check(invoice["transaction_id"])
         except Exception as error:
@@ -265,4 +267,10 @@ async def worker(bot) -> None:
         try:
             await reconcile(bot)
         except Exception:
-            log.exception("сверка счетов сорвалась")
+            log.exception("сверка счетов Platega сорвалась")
+        try:
+            import cryptobot
+
+            await cryptobot.reconcile(bot)
+        except Exception:
+            log.exception("сверка счетов CryptoBot сорвалась")
