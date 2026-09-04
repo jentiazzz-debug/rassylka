@@ -216,6 +216,75 @@ COIN_MAX = max(COIN_MIN, _int("COIN_MAX", "10000"))
 #: Как называется внутренняя валюта.
 COIN_NAME = (os.getenv("COIN_NAME") or "Slx").strip()
 
+#: Почём монета в рублях. Оплата рублями идёт через Platega; звёзды и
+#: рубли живут параллельно, и курс у них свой.
+RUB_PER_COIN = _float("RUB_PER_COIN", "2")
+
+#: Пачки монет для оплаты рублями. Формат тот же, что у звёздных:
+#: «монеты» или «монеты:цена в рублях».
+def _rub_packs(raw: str) -> list[dict]:
+    out: list[dict] = []
+    for chunk in raw.replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        coins, _, price = chunk.partition(":")
+        if not coins.strip().isdigit():
+            continue
+        amount = int(coins)
+        try:
+            rub = float(price) if price.strip() else amount * RUB_PER_COIN
+        except ValueError:
+            rub = amount * RUB_PER_COIN
+        out.append({"coins": amount, "rub": round(max(1.0, rub), 2)})
+    return out
+
+
+RUB_PACKS = _rub_packs(
+    os.getenv("RUB_PACKS") or "50,100,200:380,500:920"
+) or _rub_packs("50,100,200,500")
+
+
+# --- Platega: оплата рублями ------------------------------------------
+
+#: Ключи из личного кабинета Platega, раздел «Настройки».
+PLATEGA_MERCHANT = (os.getenv("PLATEGA_MERCHANT_ID") or "").strip()
+PLATEGA_SECRET = (os.getenv("PLATEGA_SECRET") or "").strip()
+PLATEGA_API = (
+    os.getenv("PLATEGA_API") or "https://app.platega.io"
+).strip().rstrip("/")
+
+#: Путь, на который Platega шлёт callback об оплате. Его же вписывают в
+#: личном кабинете: Настройки → Callback URLs.
+PLATEGA_CALLBACK_PATH = "/platega/callback"
+
+
+def platega_ready() -> bool:
+    return bool(PLATEGA_MERCHANT and PLATEGA_SECRET)
+
+
+# --- документы и реквизиты --------------------------------------------
+
+#: Кто оказывает услугу. Без этих данных документы не годятся ни для
+#: банка, ни для платёжной системы: там первым делом смотрят, с кем
+#: имеет дело клиент. Пустые значения бот показывает как незаполненные и
+#: предупреждает о них в логе при старте.
+LEGAL_NAME = (os.getenv("LEGAL_NAME") or "").strip()
+LEGAL_INN = (os.getenv("LEGAL_INN") or "").strip()
+LEGAL_EMAIL = (os.getenv("LEGAL_EMAIL") or "").strip()
+
+#: Название сервиса в документах.
+SERVICE_NAME = (os.getenv("SERVICE_NAME") or "Solutions Рассылка").strip()
+
+#: Дата вступления документов в силу. Пусто — берётся сегодняшняя, но
+#: лучше зафиксировать: банк смотрит на дату редакции.
+LEGAL_DATE = (os.getenv("LEGAL_DATE") or "").strip()
+
+
+def legal_ready() -> bool:
+    return bool(LEGAL_NAME and LEGAL_INN and (LEGAL_EMAIL or SUPPORT_URL))
+
+
 #: Сколько монет получает пригласивший, когда приглашённый впервые
 #: запускает бота.
 REF_COINS = max(0, _int("REF_COINS", "10"))
@@ -321,6 +390,18 @@ def check() -> None:
         )
     if not ADMIN_IDS:
         log.warning("ADMIN_IDS не заданы: /stats не откроется ни у кого")
+    if not legal_ready():
+        log.warning(
+            "LEGAL_NAME / LEGAL_INN / LEGAL_EMAIL не заданы — в документах "
+            "на страницах /terms и /privacy вместо реквизитов будет "
+            "заглушка. Банк и платёжная система такие документы не примут: "
+            "там первым делом смотрят, с кем имеет дело клиент."
+        )
+    if not platega_ready():
+        log.warning(
+            "PLATEGA_MERCHANT_ID / PLATEGA_SECRET не заданы — оплата "
+            "рублями выключена, останется оплата звёздами."
+        )
 
 
 def session_key() -> bytes:

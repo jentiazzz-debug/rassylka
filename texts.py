@@ -114,6 +114,15 @@ def payment_done(coins: int, stars: int, balance: int) -> str:
     )
 
 
+def rub_payment_done(coins: int, rub: float, balance: int) -> str:
+    return (
+        "✅ <b>Оплата прошла</b>\n\n"
+        f"Начислено {coins} {escape(config.COIN_NAME)} за {rub:.0f} ₽.\n"
+        f"Баланс: {coins_line(balance)}.\n\n"
+        "Подписка покупается за монеты — в приложении, раздел «Профиль»."
+    )
+
+
 def subscribed(days: int, price: int, until: int, balance: int) -> str:
     return (
         "✅ <b>Подписка активна</b>\n\n"
@@ -166,6 +175,17 @@ def invite(link: str, stats: dict) -> str:
         f"<b>{config.REF_PERCENT}%</b> с каждого его пополнения.\n\n"
         f"Пришло по ссылке: <b>{stats['invited']}</b>, "
         f"заработано: <b>{stats['earned']} {escape(config.COIN_NAME)}</b>"
+    )
+
+
+def documents(base: str) -> str:
+    base = base.rstrip("/")
+    return (
+        "📄 <b>Документы и тарифы</b>\n\n"
+        f'• <a href="{escape(base)}/terms">Пользовательское соглашение</a>\n'
+        f'• <a href="{escape(base)}/privacy">Политика конфиденциальности</a>\n'
+        f'• <a href="{escape(base)}/tariffs">Тарифы и что входит в услугу</a>\n'
+        f'• <a href="{escape(base)}/support">Поддержка и реквизиты</a>'
     )
 
 

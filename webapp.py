@@ -33,7 +33,9 @@ import chats
 import config
 import db
 import handlers
+import legal
 import payments
+import platega
 import tdata
 import texts
 
@@ -381,6 +383,16 @@ async def api_profile(request: web.Request, user: dict, data: dict) -> web.Respo
                 }
                 for pack in config.COIN_PACKS
             ],
+            "rub_packs": [
+                {"coins": pack["coins"], "rub": pack["rub"]}
+                for pack in config.RUB_PACKS
+            ] if config.platega_ready() else [],
+            "legal": {
+                "terms": f"{config.WEBAPP_URL}/terms" if config.WEBAPP_URL else "/terms",
+                "privacy": f"{config.WEBAPP_URL}/privacy" if config.WEBAPP_URL else "/privacy",
+                "tariffs": f"{config.WEBAPP_URL}/tariffs" if config.WEBAPP_URL else "/tariffs",
+                "support": f"{config.WEBAPP_URL}/support" if config.WEBAPP_URL else "/support",
+            },
             "custom": {
                 "min": config.COIN_MIN,
                 "max": config.COIN_MAX,
@@ -870,6 +882,94 @@ async def asset(request: web.Request) -> web.Response:
     )
 
 
+async def legal_page(request: web.Request) -> web.Response:
+    """Документы: соглашение, политика, тарифы, поддержка.
+
+    Без проверки initData намеренно: их открывает проверяющий из банка
+    или платёжной системы, а у него нет Telegram-клиента — страница,
+    требующая подписи, для него просто не откроется.
+    """
+    render = legal.RENDERERS.get(request.path)
+    if render is None:
+        raise web.HTTPNotFound()
+    return web.Response(
+        text=render(),
+        content_type="text/html",
+        charset="utf-8",
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+async def paid_page(request: web.Request) -> web.Response:
+    """Куда Platega возвращает человека после оплаты.
+
+    Монеты здесь не начисляются: возврат происходит в браузере, а
+    браузеру верить нельзя. Настоящее подтверждение приходит отдельным
+    callback от Platega (см. platega.py).
+    """
+    failed = request.query.get("failed")
+    title = "Оплата не прошла" if failed else "Оплата принята"
+    note = (
+        "Платёж не завершён. Если деньги списались, напишите в поддержку."
+        if failed else
+        "Монеты появятся на балансе в течение минуты. Можно закрывать эту "
+        "страницу и возвращаться в приложение."
+    )
+    return web.Response(
+        text=(
+            "<!doctype html><html lang=ru><head><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            f"<title>{title}</title><style>{legal.STYLE}</style></head><body>"
+            f"<main><div class=card><h1>{title}</h1><p>{note}</p></div></main>"
+            "</body></html>"
+        ),
+        content_type="text/html",
+        charset="utf-8",
+    )
+
+
+async def platega_callback(request: web.Request) -> web.Response:
+    """Callback об оплате рублями.
+
+    Отвечаем 200 всегда, когда запрос наш: Platega повторяет доставку до
+    трёх раз, если не ответить за минуту, а повторы нам не нужны — все
+    решения по счёту уже приняты внутри apply().
+    """
+    if not platega.secret_ok(request.headers):
+        log.warning("callback Platega с чужим секретом: %s", request.remote)
+        return web.json_response({"ok": False}, status=403)
+    body = await _body(request)
+    try:
+        result = await platega.apply(body, _bot)
+    except Exception:
+        log.exception("callback Platega сорвался: %s", body)
+        # 500 заставит Platega повторить — это как раз то, что нужно,
+        # когда сломались мы, а не запрос.
+        return web.json_response({"ok": False}, status=500)
+    log.info("callback Platega %s: %s", body.get("id"), result)
+    return web.json_response({"ok": True})
+
+
+@authed
+async def api_rub_invoice(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    """Счёт на оплату рублями. Возвращает ссылку на платёжную форму."""
+    if not config.platega_ready():
+        return _fail("Оплата рублями сейчас недоступна. Напишите в поддержку.")
+    coins = _int(data.get("coins"))
+    if platega.price_of(coins) is None:
+        return _fail("Такой пачки монет нет.")
+    try:
+        invoice = await platega.create(
+            int(user["id"]), coins, user.get("username")
+        )
+    except Exception as error:
+        log.exception("счёт Platega на %s монет не создался", coins)
+        return _fail(f"Счёт не создался: {type(error).__name__}")
+    return web.json_response({"ok": True, "url": invoice["url"]})
+
+
 async def health(request: web.Request) -> web.Response:
     """Пинг для хостинга: жив ли процесс."""
     return web.json_response({"ok": True, "logins_pending": accounts.pending_count()})
@@ -886,6 +986,13 @@ def build() -> web.Application:
         [
             web.get("/", page),
             web.get("/health", health),
+            web.get("/terms", legal_page),
+            web.get("/privacy", legal_page),
+            web.get("/tariffs", legal_page),
+            web.get("/support", legal_page),
+            web.get("/paid", paid_page),
+            web.post(config.PLATEGA_CALLBACK_PATH, platega_callback),
+            web.post("/api/invoice/rub", api_rub_invoice),
             web.get("/{name:app\\.(?:js|css)}", asset),
             web.post("/api/state", api_state),
             web.post("/api/login/start", api_login_start),

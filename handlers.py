@@ -131,6 +131,22 @@ async def support_command(message: Message) -> None:
     )
 
 
+@router.message(Command("terms"))
+async def terms_command(message: Message) -> None:
+    """Документы и тарифы — ссылками, а не текстом.
+
+    Банк и платёжная система смотрят именно на страницы: им нужен
+    открывающийся в браузере адрес, а не сообщение в чате.
+    """
+    await _remember(message)
+    if not config.WEBAPP_URL:
+        await message.answer(texts.NO_WEBAPP)
+        return
+    await message.answer(
+        texts.documents(config.WEBAPP_URL), reply_markup=keyboards.main_menu()
+    )
+
+
 @router.message(Command("stats"))
 async def stats_command(message: Message) -> None:
     user = message.from_user

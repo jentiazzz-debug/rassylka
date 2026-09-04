@@ -492,6 +492,84 @@ function renderProfile() {
 
   renderPlans();
   renderPacks();
+  renderRubPacks();
+  renderLegal();
+}
+
+/** Пачки за рубли. Блока нет вовсе, пока оплата рублями не настроена:
+ *  пустой раздел «оплата недоступна» только путает. */
+function renderRubPacks() {
+  const packs = me.rub_packs || [];
+  $('rub-block').hidden = !packs.length;
+  if (!packs.length) return;
+
+  const box = $('rub-packs');
+  box.textContent = '';
+  for (const pack of packs) {
+    const button = document.createElement('button');
+    button.className = 'pack';
+
+    const count = document.createElement('div');
+    count.className = 'pack-count';
+    count.textContent = pack.coins;
+    const label = document.createElement('div');
+    label.className = 'pack-label';
+    label.textContent = me.coin_name;
+    const price = document.createElement('div');
+    price.className = 'pack-price';
+    price.textContent = Math.round(pack.rub) + ' ₽';
+
+    button.append(count, label, price);
+    button.onclick = () => payRub(pack, button);
+    box.appendChild(button);
+  }
+}
+
+async function payRub(pack, button) {
+  const done = busy(button, '…');
+  const result = await api('/api/invoice/rub', { coins: pack.coins });
+  done();
+  if (!result.ok) {
+    alertBox(result.error);
+    return;
+  }
+  // Ссылка ведёт на страницу платёжной организации — это внешний сайт,
+  // и открывать его надо во внешнем браузере, а не внутри мини-аппа:
+  // внутри не сработают ни приложение банка, ни возврат по СБП.
+  if (tg && tg.openLink) tg.openLink(result.url);
+  else window.open(result.url, '_blank');
+  // Монеты придут от платёжной системы отдельным подтверждением, а не
+  // из браузера: перечитываем состояние через полминуты.
+  setTimeout(refresh, 30000);
+}
+
+function renderLegal() {
+  const box = $('legal-links');
+  box.textContent = '';
+  const links = me.legal || {};
+  const rows = [
+    ['Пользовательское соглашение', links.terms],
+    ['Политика конфиденциальности', links.privacy],
+    ['Тарифы', links.tariffs],
+    ['Поддержка и реквизиты', links.support],
+  ];
+  for (const [title, href] of rows) {
+    if (!href) continue;
+    const row = document.createElement('button');
+    row.className = 'row';
+    const body = document.createElement('span');
+    body.className = 'row-body';
+    const name = document.createElement('span');
+    name.className = 'row-title';
+    name.textContent = title;
+    body.appendChild(name);
+    row.append(body, icon('chevron'));
+    row.onclick = () => {
+      if (tg && tg.openLink) tg.openLink(href);
+      else window.open(href, '_blank');
+    };
+    box.appendChild(row);
+  }
 }
 
 /** Строки «название — значение». clear=false дописывает к тому, что уже

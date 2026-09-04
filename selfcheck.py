@@ -48,7 +48,9 @@ import crypto  # noqa: E402
 import db  # noqa: E402
 import handlers  # noqa: E402
 import keyboards  # noqa: E402
+import legal  # noqa: E402
 import payments  # noqa: E402
+import platega  # noqa: E402
 import tdata  # noqa: E402
 import texts  # noqa: E402
 import webapp  # noqa: E402
@@ -1018,6 +1020,112 @@ async def check_materials() -> None:
     await db.delete_account(USER, account_id)
 
 
+async def check_legal() -> None:
+    print("\nДокументы")
+    config.LEGAL_NAME = ""
+    config.LEGAL_INN = ""
+    blank = legal.terms()
+    check("без реквизитов документ честно говорит об этом",
+          "реквизиты исполнителя не указаны" in blank)
+
+    config.LEGAL_NAME = "ИП Иванов Иван Иванович"
+    config.LEGAL_INN = "770000000000"
+    config.LEGAL_EMAIL = "support@example.com"
+    config.LEGAL_DATE = "01.09.2026"
+
+    for path, render in legal.RENDERERS.items():
+        html = render()
+        check(f"{path} собирается", "<h1>" in html and "</html>" in html)
+        check(f"{path} с реквизитами",
+              "ИП Иванов" in html or path == "/tariffs", path)
+        check(f"{path} без незаполненных мест", "class=\"todo\"" not in html,
+              path)
+        check(f"{path} с датой редакции", "01.09.2026" in html, path)
+
+    # Тарифы обязаны совпадать с конфигом: цена в документе, разъехавшаяся
+    # с ценой в приложении, — это то, за что согласование заворачивают.
+    page = legal.tariffs()
+    for plan in config.PLANS:
+        check(f"тариф {plan['days']} дн. в документе",
+              f"{plan['stars']} {config.COIN_NAME}" in page, str(plan))
+    for pack in config.COIN_PACKS:
+        check(f"пачка {pack['coins']} за звёзды в документе",
+              f"{pack['stars']} ⭐" in page, str(pack))
+    for pack in config.RUB_PACKS:
+        check(f"пачка {pack['coins']} за рубли в документе",
+              f"{pack['rub']:.0f} ₽" in page, str(pack))
+    check("лимиты в документе",
+          str(config.DAILY_LIMIT) in page and str(config.MIN_INTERVAL) in page)
+    check("бесплатный период в документе", str(config.TRIAL_DAYS) in page)
+
+    # Контакты поддержки: банк требует не группу, а адресную связь.
+    support = legal.support()
+    check("почта поддержки на странице", "support@example.com" in support)
+    check("порядок возврата описан", "возврат" in legal.terms().lower())
+    check("что храним — описано",
+          "ключ авторизации" in legal.privacy().lower())
+
+
+async def check_platega() -> None:
+    print("\nОплата рублями (Platega)")
+    config.PLATEGA_MERCHANT = "merchant-123"
+    config.PLATEGA_SECRET = "secret-456"
+
+    check("цена пачки берётся из конфига",
+          platega.price_of(config.RUB_PACKS[0]["coins"])
+          == config.RUB_PACKS[0]["rub"])
+    check("чужой пачки нет", platega.price_of(7) is None)
+
+    # Подлинность callback: у Platega нет подписи, она подтверждает себя
+    # нашим же секретом в заголовках.
+    check("свой секрет проходит", platega.secret_ok(
+        {"X-Secret": "secret-456", "X-MerchantId": "merchant-123"}))
+    check("чужой секрет не проходит", not platega.secret_ok(
+        {"X-Secret": "нет", "X-MerchantId": "merchant-123"}))
+    check("чужой мерчант не проходит", not platega.secret_ok(
+        {"X-Secret": "secret-456", "X-MerchantId": "нет"}))
+    check("пустые заголовки не проходят", not platega.secret_ok({}))
+
+    # Начисление идёт по нашей записи о счёте, а не по телу callback.
+    await db.open_invoice("tx-1", "order-1", USER, 100, 200.0)
+    before = await db.coins_of(USER)
+
+    # Подделанная сумма в теле не должна ничего изменить.
+    result = await platega.apply(
+        {"id": "tx-1", "status": "CONFIRMED", "amount": 999999,
+         "payload": '{"coins": 999999}'}, None
+    )
+    check("оплата зачлась", result == "начислено", result)
+    after = await db.coins_of(USER)
+    check("начислено ровно из нашей записи", after == before + 100,
+          f"{before} → {after}")
+
+    # Повтор callback не начисляет второй раз.
+    again = await platega.apply({"id": "tx-1", "status": "CONFIRMED"}, None)
+    check("повторный callback не зачисляет", again == "уже обработан", again)
+    check("баланс не изменился", await db.coins_of(USER) == after)
+
+    # Неизвестный счёт.
+    unknown = await platega.apply({"id": "tx-нет", "status": "CONFIRMED"}, None)
+    check("неизвестный счёт отбивается", unknown == "счёт неизвестен", unknown)
+
+    # Отмена закрывает счёт и ничего не начисляет.
+    await db.open_invoice("tx-2", "order-2", USER, 50, 100.0)
+    balance = await db.coins_of(USER)
+    canceled = await platega.apply({"id": "tx-2", "status": "CANCELED"}, None)
+    check("отмена не начисляет", await db.coins_of(USER) == balance, canceled)
+    invoice = await db.invoice("tx-2")
+    check("отменённый счёт закрыт", invoice["status"] == "canceled",
+          str(invoice["status"]))
+
+    # Висящие счета видны для сверки, закрытые — нет.
+    await db.open_invoice("tx-3", "order-3", USER, 50, 100.0)
+    pending = await db.pending_invoices()
+    ids = {row["transaction_id"] for row in pending}
+    check("висящий счёт виден для сверки", "tx-3" in ids, str(ids))
+    check("оплаченный в сверку не идёт", "tx-1" not in ids, str(ids))
+
+
 async def check_variants() -> None:
     print("\nВарианты сообщения")
     account_id = await db.save_account(
@@ -1231,6 +1339,8 @@ async def run() -> None:
         await check_payments()
         await check_referrals()
         await check_materials()
+        await check_legal()
+        await check_platega()
         await check_variants()
         await check_joins()
         await check_footer_on_media()

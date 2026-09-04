@@ -172,6 +172,23 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id, created_at);
 
+-- Счета на оплату рублями. Заводятся до того, как человек уйдёт
+-- платить: начисление опирается на эту запись, а не на то, что придёт в
+-- callback снаружи. Подписи у callback нет, и доверять его числам
+-- нельзя — иначе подделанный запрос начислит сколько попросит.
+CREATE TABLE IF NOT EXISTS invoices (
+    transaction_id TEXT PRIMARY KEY,
+    order_id       TEXT,
+    user_id        INTEGER NOT NULL,
+    coins          INTEGER NOT NULL,
+    rub            REAL    NOT NULL,
+    status         TEXT    NOT NULL DEFAULT 'pending',
+    created_at     INTEGER NOT NULL,
+    closed_at      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_invoices_pending ON invoices(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_invoices_user ON invoices(user_id, created_at);
+
 -- Варианты сообщения одной рассылки. Одинаковый текст, уходящий по
 -- кругу в сотню чатов, — самый заметный признак рассылки из всех, и
 -- ловится он тривиально. Несколько вариантов вперемешку такую проверку
@@ -489,6 +506,56 @@ async def coin_history(user_id: int, limit: int = 20) -> list[dict]:
          "created_at": row["created_at"]}
         for row in rows
     ]
+
+
+# --- счета на оплату рублями ------------------------------------------
+
+
+async def open_invoice(transaction_id: str, order_id: str, user_id: int,
+                       coins: int, rub: float) -> None:
+    """Записать выставленный счёт до того, как человек пойдёт платить."""
+    await _conn().execute(
+        """
+        INSERT INTO invoices (transaction_id, order_id, user_id, coins, rub,
+                              status, created_at)
+        VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        ON CONFLICT (transaction_id) DO NOTHING
+        """,
+        (transaction_id, order_id, user_id, coins, rub, int(time.time())),
+    )
+    await _conn().commit()
+
+
+async def invoice(transaction_id: str) -> dict | None:
+    row = await _fetchone(
+        "SELECT * FROM invoices WHERE transaction_id = ?", (transaction_id,)
+    )
+    return dict(row) if row else None
+
+
+async def close_invoice(transaction_id: str, status: str) -> bool:
+    """Закрыть счёт. False — он уже был закрыт.
+
+    Условие на текущий статус стоит в самом запросе: Platega повторяет
+    доставку callback, и два одновременных повтора иначе начислили бы
+    монеты дважды.
+    """
+    cursor = await _conn().execute(
+        "UPDATE invoices SET status = ?, closed_at = ? "
+        "WHERE transaction_id = ? AND status = 'pending'",
+        (status, int(time.time()), transaction_id),
+    )
+    await _conn().commit()
+    return cursor.rowcount > 0
+
+
+async def pending_invoices(max_age: int = 86400) -> list[dict]:
+    rows = await _fetchall(
+        "SELECT * FROM invoices WHERE status = 'pending' AND created_at > ? "
+        "ORDER BY created_at",
+        (int(time.time()) - max_age,),
+    )
+    return [dict(row) for row in rows]
 
 
 # --- приглашения ------------------------------------------------------

@@ -26,6 +26,7 @@ import db
 import handlers
 import keyboards
 import payments
+import platega
 import webapp
 
 logging.basicConfig(
@@ -39,6 +40,7 @@ COMMANDS = (
     ("start", "Главное меню"),
     ("help", "Как это работает"),
     ("invite", "Пригласить друга"),
+    ("terms", "Документы и тарифы"),
     ("support", "Поддержка"),
 )
 
@@ -107,10 +109,14 @@ async def run() -> None:
     # ограничение от Telegram человек должен узнать сразу в личке, а не
     # когда сам зайдёт в приложение.
     sender = asyncio.create_task(broadcast.worker(bot), name="broadcast")
+    # Сверка счетов Platega: callback могут не доставить — сеть,
+    # передеплой, упавший процесс. Человек в этом случае заплатил, а
+    # монет не увидел, и пойдёт в поддержку.
+    invoices = asyncio.create_task(platega.worker(bot), name="invoices")
     try:
         await dispatcher.start_polling(bot)
     finally:
-        for task in (sweeper, sender):
+        for task in (sweeper, sender, invoices):
             task.cancel()
             try:
                 await task
