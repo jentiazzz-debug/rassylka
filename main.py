@@ -19,6 +19,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScopeChat
 
 import accounts
+import admin
 import broadcast
 import config
 import crypto
@@ -45,7 +46,10 @@ COMMANDS = (
     ("support", "Поддержка"),
 )
 
-ADMIN_COMMANDS = (("stats", "Сводка"),)
+ADMIN_COMMANDS = (
+    ("admin", "Оформление бота"),
+    ("stats", "Сводка"),
+)
 
 
 async def run() -> None:
@@ -72,6 +76,10 @@ async def run() -> None:
     # на любое сообщение в личке, и сообщение об успешной оплате он бы
     # съел — подписка не продлилась бы, а деньги ушли.
     dispatcher.include_router(payments.router)
+    # Админка впереди общего роутера: она ждёт от владельца обычные
+    # сообщения (приветствие, список кнопок), а у handlers последним
+    # стоит хендлер на любое сообщение в личке — он бы их съел.
+    dispatcher.include_router(admin.router)
     dispatcher.include_router(handlers.router)
 
     # Счета на оплату выписывает бот, а просит их мини-апп.

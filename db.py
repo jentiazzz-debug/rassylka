@@ -192,6 +192,16 @@ CREATE TABLE IF NOT EXISTS invoices (
 CREATE INDEX IF NOT EXISTS idx_invoices_pending ON invoices(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_invoices_user ON invoices(user_id, created_at);
 
+-- Настройки, которые владелец меняет из бота, а не через .env:
+-- приветствие, кнопки меню, баннер в приложении. Ключ-значение, потому
+-- что набор таких настроек будет расти, а заводить колонку на каждую —
+-- это миграция на каждый чих.
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at INTEGER NOT NULL
+);
+
 -- Варианты сообщения одной рассылки. Одинаковый текст, уходящий по
 -- кругу в сотню чатов, — самый заметный признак рассылки из всех, и
 -- ловится он тривиально. Несколько вариантов вперемешку такую проверку
@@ -1415,6 +1425,34 @@ async def account_pause(account_id: int) -> tuple[int, str] | None:
     if row is None or int(row["until"]) <= int(time.time()):
         return None
     return int(row["until"]), row["reason"] or ""
+
+
+# --- настройки из бота ------------------------------------------------
+
+
+async def setting(key: str, default: str = "") -> str:
+    row = await _fetchone("SELECT value FROM settings WHERE key = ?", (key,))
+    return (row["value"] if row and row["value"] is not None else default)
+
+
+async def set_setting(key: str, value: str | None) -> None:
+    """Записать настройку. None стирает её и возвращает значение по
+    умолчанию — так «сбросить» не требует отдельной таблицы флагов."""
+    if value is None:
+        await _conn().execute("DELETE FROM settings WHERE key = ?", (key,))
+    else:
+        await _conn().execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value, "
+            "updated_at = excluded.updated_at",
+            (key, value, int(time.time())),
+        )
+    await _conn().commit()
+
+
+async def settings_all() -> dict:
+    rows = await _fetchall("SELECT key, value FROM settings", ())
+    return {row["key"]: row["value"] for row in rows}
 
 
 # --- админка: разбор обращений ----------------------------------------

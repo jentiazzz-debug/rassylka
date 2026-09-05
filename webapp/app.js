@@ -491,6 +491,7 @@ function renderProfile() {
   support.hidden = !state.support_url;
   if (state.support_url) support.href = state.support_url;
 
+  renderBanner();
   renderPlans();
   renderLegal();
   $('tab-admin').hidden = !state.is_admin;
@@ -499,6 +500,18 @@ function renderProfile() {
 /** Пачки за рубли. Блока нет вовсе, пока оплата рублями не настроена:
  *  пустой раздел «оплата недоступна» только путает. */
 
+
+/** Баннер владельца из /admin. Нет заголовка — нет и блока: пустая
+ *  панель наверху профиля выглядит как недогрузившийся экран. */
+function renderBanner() {
+  const banner = state.banner || {};
+  const title = (banner.title || '').trim();
+  $('app-banner').hidden = !title;
+  if (!title) return;
+  $('banner-title').textContent = title;
+  $('banner-text').textContent = (banner.text || '').trim();
+  $('banner-text').hidden = !(banner.text || '').trim();
+}
 
 function renderLegal() {
   const box = $('legal-links');

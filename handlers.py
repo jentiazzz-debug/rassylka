@@ -15,6 +15,8 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 
+import json
+
 import config
 import db
 import keyboards
@@ -98,16 +100,66 @@ async def invite_command(message: Message) -> None:
     )
 
 
+async def custom_buttons() -> list[dict] | None:
+    """Кнопки, настроенные владельцем. None — обычные."""
+    raw = await db.setting("menu_buttons")
+    if not raw:
+        return None
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError:
+        log.warning("кнопки меню в базе испорчены — показываю обычные")
+        return None
+    return items if isinstance(items, list) and items else None
+
+
+async def send_start(bot, chat_id: int, user, preview: bool = False) -> None:
+    """Приветствие: своё, настроенное владельцем, либо обычное.
+
+    Своё копируется, а не пересобирается: `copy_message` переносит фото,
+    гифку, кружок, премиум-эмодзи и разметку целиком. Разбирать и
+    собирать заново — значит потерять половину: у премиум-эмодзи нужен
+    доступ к их документам, у медиа свои file_id.
+    """
+    markup = keyboards.main_menu(await custom_buttons())
+
+    chat = await db.setting("menu_chat_id")
+    msg_id = await db.setting("menu_msg_id")
+    if chat and msg_id:
+        try:
+            await bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=int(chat),
+                message_id=int(msg_id),
+                reply_markup=markup,
+            )
+            return
+        except Exception as error:
+            # Исходное сообщение удалили или бот потерял к нему доступ.
+            # Молчать нельзя: владелец будет думать, что оформление
+            # работает, а люди видят обычный текст.
+            log.warning("своё приветствие не скопировалось: %s", error)
+            await db.set_setting("menu_chat_id", None)
+            await db.set_setting("menu_msg_id", None)
+            for admin_id in config.ADMIN_IDS:
+                try:
+                    await bot.send_message(admin_id, texts.GREETING_LOST)
+                except Exception:
+                    pass
+
+    subscription = await db.subscription(getattr(user, "id", 0) or 0)
+    await bot.send_message(
+        chat_id,
+        texts.start(getattr(user, "first_name", None), subscription),
+        reply_markup=markup,
+    )
+
+
 @router.message(CommandStart())
 async def start(message: Message) -> None:
     await _remember(message)
     await _handle_referral(message)
-    user = message.from_user
-    subscription = await db.subscription(user.id if user else 0)
-    await message.answer(
-        texts.start(user.first_name if user else None, subscription),
-        reply_markup=keyboards.main_menu(),
-    )
+    await send_start(message.bot, message.chat.id, message.from_user)
     if not config.webapp_ready():
         # Человеку это ни о чём не скажет, а владельцу подскажет, почему
         # в меню одна кнопка вместо двух.
@@ -185,9 +237,12 @@ async def tariffs_button(callback: CallbackQuery) -> None:
 async def home_button(callback: CallbackQuery) -> None:
     user = callback.from_user
     subscription = await db.subscription(user.id)
+    # Кнопка «назад» правит уже отправленное сообщение, поэтому здесь
+    # всегда текст: превратить его в фото или гифку правкой нельзя.
+    # Своё оформление увидят при следующем /start.
     await callback.message.edit_text(
         texts.start(user.first_name, subscription),
-        reply_markup=keyboards.main_menu(),
+        reply_markup=keyboards.main_menu(await custom_buttons()),
     )
     await callback.answer()
 
@@ -201,9 +256,4 @@ async def anything_else(message: Message) -> None:
     все команды.
     """
     await _remember(message)
-    user = message.from_user
-    subscription = await db.subscription(user.id if user else 0)
-    await message.answer(
-        texts.start(user.first_name if user else None, subscription),
-        reply_markup=keyboards.main_menu(),
-    )
+    await send_start(message.bot, message.chat.id, message.from_user)

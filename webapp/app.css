@@ -285,6 +285,10 @@ button.row:disabled { opacity: .5; cursor: default; }
 }
 .me-name .ic { width: 15px; height: 15px; color: var(--ink-3); }
 
+.banner { padding: 16px 18px; }
+.banner-title { font-weight: 650; letter-spacing: -.01em; }
+.banner-text { color: var(--ink-2); font-size: 13px; margin-top: 3px; }
+
 .balance {
   display: flex;
   flex-direction: column;

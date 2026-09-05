@@ -221,6 +221,10 @@ async def _state(user_id: int) -> dict:
             "max_variants": config.MAX_VARIANTS,
         },
         "support_url": config.SUPPORT_URL,
+        "banner": {
+            "title": await db.setting("app_banner_title"),
+            "text": await db.setting("app_banner_text"),
+        },
         "is_admin": user_id in config.ADMIN_IDS,
         "mtproto_ready": config.mtproto_ready(),
         "tdata_ready": tdata.available(),

@@ -22,7 +22,15 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 import config
 
 
-def main_menu() -> InlineKeyboardMarkup:
+#: Короткие слова вместо ссылок в настройке кнопок: владелец пишет
+#: «Тарифы | tariffs», а не ищет, какой у кнопки callback_data.
+ACTIONS = {
+    "tariffs": "m:tariffs",
+    "help": "m:help",
+}
+
+
+def main_menu(custom: list[dict] | None = None) -> InlineKeyboardMarkup:
     """Главное меню.
 
     Документы стоят отдельными кнопками, а не спрятаны за командой: их
@@ -31,14 +39,45 @@ def main_menu() -> InlineKeyboardMarkup:
     обычному человеку — единственный способ прочитать условия до оплаты.
     """
     builder = InlineKeyboardBuilder()
-    if config.webapp_ready():
-        builder.button(
-            text="🚀 Открыть приложение",
-            web_app=WebAppInfo(url=config.WEBAPP_URL),
-        )
-    if config.SUPPORT_URL:
-        builder.button(text="💬 Поддержка", url=config.SUPPORT_URL)
+    custom_rows = 0
 
+    # Свои кнопки идут первыми: владелец ставит их ради того, чтобы их
+    # увидели, а не ради того, чтобы они прятались под служебными.
+    for item in custom or []:
+        text = str(item.get("text") or "").strip()[:64]
+        if not text:
+            continue
+        action = item.get("action")
+        if action == "app":
+            if config.webapp_ready():
+                builder.button(text=text, web_app=WebAppInfo(url=config.WEBAPP_URL))
+                custom_rows += 1
+            continue
+        if action == "support":
+            if config.SUPPORT_URL:
+                builder.button(text=text, url=config.SUPPORT_URL)
+                custom_rows += 1
+            continue
+        if action in ACTIONS:
+            builder.button(text=text, callback_data=ACTIONS[action])
+            custom_rows += 1
+            continue
+        url = str(item.get("url") or "").strip()
+        if url.startswith(("https://", "http://", "tg://")):
+            builder.button(text=text, url=url)
+            custom_rows += 1
+
+    if not custom:
+        if config.webapp_ready():
+            builder.button(
+                text="🚀 Открыть приложение",
+                web_app=WebAppInfo(url=config.WEBAPP_URL),
+            )
+        if config.SUPPORT_URL:
+            builder.button(text="💬 Поддержка", url=config.SUPPORT_URL)
+
+    # Документы добавляются всегда, даже поверх своих кнопок: их
+    # требует банк, и убрать их из меню владелец не может.
     if config.WEBAPP_URL:
         base = config.WEBAPP_URL.rstrip("/")
         builder.button(text="📄 Соглашение", url=f"{base}/terms")
@@ -54,7 +93,12 @@ def main_menu() -> InlineKeyboardMarkup:
 
     # Две узкие кнопки документов в ряд, остальное — по одной: адреса
     # длинные, и в один столбец список выходит на пол-экрана.
-    if config.WEBAPP_URL:
+    if custom:
+        # Свои кнопки — по одной в строке: тексты у них произвольные, и
+        # две длинные подписи рядом не помещаются.
+        tail = [2, 1, 2] if config.WEBAPP_URL else [2]
+        builder.adjust(*([1] * custom_rows + tail))
+    elif config.WEBAPP_URL:
         rows = [1, 1, 2, 1, 2] if config.SUPPORT_URL else [1, 2, 1, 2]
         if not config.webapp_ready():
             rows = rows[1:]

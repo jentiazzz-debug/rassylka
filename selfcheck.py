@@ -42,6 +42,7 @@ config.TRIAL_DAYS = 5
 config.MAX_ACCOUNTS = 2
 
 import accounts  # noqa: E402  — только после подмены путей
+import admin  # noqa: E402
 import broadcast  # noqa: E402
 import chats  # noqa: E402
 import crypto  # noqa: E402
@@ -1020,6 +1021,74 @@ async def check_materials() -> None:
     await db.delete_account(USER, account_id)
 
 
+async def check_custom_menu() -> None:
+    print("\nОформление бота из /admin")
+    config.WEBAPP_URL = "https://example.com"
+    config.SUPPORT_URL = "https://t.me/support"
+
+    # Настройки живут в базе и стираются установкой None — так «сбросить»
+    # не требует отдельной таблицы флагов.
+    await db.set_setting("app_banner_title", "Скидка 20%")
+    check("настройка пишется",
+          await db.setting("app_banner_title") == "Скидка 20%")
+    await db.set_setting("app_banner_title", None)
+    check("и стирается", await db.setting("app_banner_title") == "")
+    check("значение по умолчанию отдаётся",
+          await db.setting("нет-такого", "по умолчанию") == "по умолчанию")
+
+    # Свои кнопки.
+    custom = [
+        {"text": "Наш канал", "url": "https://t.me/channel"},
+        {"text": "Открыть", "action": "app"},
+        {"text": "Цены", "action": "tariffs"},
+        {"text": "Мусор", "url": "javascript:alert(1)"},
+        {"text": "", "url": "https://t.me/empty"},
+    ]
+    buttons = [b for row in keyboards.main_menu(custom).inline_keyboard for b in row]
+    labels = [b.text for b in buttons]
+
+    check("своя кнопка со ссылкой есть", "Наш канал" in labels, str(labels))
+    check("своя кнопка приложения есть", "Открыть" in labels, str(labels))
+    check("своя кнопка тарифов есть", "Цены" in labels, str(labels))
+
+    # Ссылка не из белого списка схем не должна попасть в меню: её текст
+    # пишет владелец, но javascript: в кнопке — это не «своя кнопка».
+    check("мусорная схема отбрасывается", "Мусор" not in labels, str(labels))
+    check("кнопка без подписи отбрасывается", "" not in labels, str(labels))
+
+    # Обязательные кнопки остаются даже поверх своих: их требует банк.
+    urls = {b.url for b in buttons if b.url}
+    for path in ("/terms", "/privacy", "/support"):
+        check(f"документ {path} остаётся при своих кнопках",
+              f"https://example.com{path}" in urls, str(sorted(urls)))
+    check("тарифы остаются",
+          any(b.callback_data == "m:tariffs" for b in buttons))
+
+    # Без своих кнопок — обычное меню.
+    plain = [b.text for row in keyboards.main_menu().inline_keyboard for b in row]
+    check("без настройки меню обычное",
+          any("Открыть приложение" in t for t in plain), str(plain))
+
+    # Разбор строк «Текст | куда» — то, что вводит владелец.
+    await db.set_setting("menu_buttons", json.dumps(custom, ensure_ascii=False))
+    loaded = await handlers.custom_buttons()
+    check("кнопки читаются из базы", loaded and len(loaded) == 5, str(loaded))
+
+    # Испорченный JSON не должен ронять /start — только вернуть обычное.
+    await db.set_setting("menu_buttons", "{не json")
+    check("битые кнопки не ломают меню",
+          await handlers.custom_buttons() is None)
+    await db.set_setting("menu_buttons", None)
+    check("после сброса кнопки обычные",
+          await handlers.custom_buttons() is None)
+
+    # Ключи сброса перечислены полностью: забытый ключ пережил бы
+    # «сбросить оформление» и остался бы у людей на экране.
+    for key in ("menu_chat_id", "menu_msg_id", "menu_buttons",
+                "app_banner_title", "app_banner_text"):
+        check(f"ключ {key} есть в списке сброса", key in admin.KEYS)
+
+
 async def check_admin() -> None:
     print("\nАдминка")
     from aiohttp.test_utils import TestClient, TestServer
@@ -1542,6 +1611,7 @@ async def run() -> None:
         await check_referrals()
         await check_materials()
         await check_admin()
+        await check_custom_menu()
         await check_legal()
         await check_menu_buttons()
         await check_tariffs_message()
