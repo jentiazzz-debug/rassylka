@@ -189,6 +189,68 @@ def invite(link: str, stats: dict) -> str:
     )
 
 
+def tariffs() -> str:
+    """Тарифы сообщением в чате.
+
+    Собирается из config, как и страница /tariffs: цена в двух местах
+    однажды разъедется, а разъехавшаяся цена — это спор с клиентом и
+    вопрос от банка. Источник один.
+    """
+    plans = "\n".join(
+        f"• {plan_period(plan['days'])} — <b>{plan['stars']} "
+        f"{escape(config.COIN_NAME)}</b>"
+        for plan in config.PLANS
+    )
+
+    stars = ", ".join(
+        f"{pack['coins']} за {pack['stars']} ⭐️" for pack in config.COIN_PACKS
+    )
+    ways = [f"• Telegram Stars: {stars}"]
+    if config.platega_ready() and config.RUB_PACKS:
+        rubles = ", ".join(
+            f"{pack['coins']} за {pack['rub']:.0f} ₽" for pack in config.RUB_PACKS
+        )
+        ways.append(f"• Карта или СБП: {rubles}")
+    if config.CRYPTO_TOKEN and config.CRYPTO_PACKS:
+        crypto = ", ".join(
+            f"{pack['coins']} за ${pack['usd']:.0f}"
+            for pack in config.CRYPTO_PACKS
+        )
+        ways.append(f"• Криптовалютой: {crypto}")
+
+    trial = config.TRIAL_DAYS
+    text = (
+        "💳 <b>Тарифы</b>\n\n"
+        "Подписка покупается за монеты "
+        f"({escape(config.COIN_NAME)}), монеты не сгорают.\n\n"
+        f"<b>Подписка</b>\n{plans}\n\n"
+        f"<b>Пополнение</b>\n" + "\n".join(ways) + "\n\n"
+        f"<b>Бесплатно</b>\nПервые {trial} "
+        f"{plural(trial, 'день', 'дня', 'дней')} — все функции. "
+        "В это время в конце каждого сообщения рассылки дописывается "
+        "строка о сервисе; подписка её убирает.\n\n"
+        "<b>Ограничения</b> (действуют всегда, оплатой не снимаются)\n"
+        f"• не чаще одного сообщения в {config.MIN_INTERVAL} с\n"
+        f"• не больше {config.DAILY_LIMIT} сообщений в сутки с аккаунта\n"
+        f"• до {config.MAX_ACCOUNTS} подключённых аккаунтов"
+    )
+    if config.WEBAPP_URL:
+        base = config.WEBAPP_URL.rstrip("/")
+        text += (
+            f'\n\nПолные условия — <a href="{escape(base)}/tariffs">'
+            "на странице тарифов</a>."
+        )
+    return text + review_line()
+
+
+def plan_period(days: int) -> str:
+    if days == 1:
+        return "1 день"
+    if days >= 30:
+        return "30 дней"
+    return f"{days} {plural(days, 'день', 'дня', 'дней')}"
+
+
 def review_line() -> str:
     """Строка с кодовым словом. Пусто — переменная не задана.
 

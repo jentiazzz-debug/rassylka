@@ -43,20 +43,24 @@ def main_menu() -> InlineKeyboardMarkup:
         base = config.WEBAPP_URL.rstrip("/")
         builder.button(text="📄 Соглашение", url=f"{base}/terms")
         builder.button(text="🔒 Конфиденциальность", url=f"{base}/privacy")
-        builder.button(text="💳 Тарифы", url=f"{base}/tariffs")
         builder.button(text="🛟 Поддержка и документы", url=f"{base}/support")
 
+    # Тарифы — не ссылкой, а сообщением прямо в чате: цены человек
+    # смотрит перед оплатой, и уводить его за ними из Telegram незачем.
+    # Страница /tariffs при этом остаётся — банку нужен адрес, который
+    # открывается без Telegram.
+    builder.button(text="💳 Тарифы", callback_data="m:tariffs")
     builder.button(text="❓ Как это работает", callback_data="m:help")
 
     # Две узкие кнопки документов в ряд, остальное — по одной: адреса
     # длинные, и в один столбец список выходит на пол-экрана.
     if config.WEBAPP_URL:
-        rows = [1, 1, 2, 2, 1] if config.SUPPORT_URL else [1, 2, 2, 1]
+        rows = [1, 1, 2, 1, 2] if config.SUPPORT_URL else [1, 2, 1, 2]
         if not config.webapp_ready():
             rows = rows[1:]
         builder.adjust(*rows)
     else:
-        builder.adjust(1)
+        builder.adjust(1, 2)
     return builder.as_markup()
 
 

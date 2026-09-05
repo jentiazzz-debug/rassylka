@@ -147,6 +147,16 @@ async def terms_command(message: Message) -> None:
     )
 
 
+@router.message(Command("tariffs"))
+async def tariffs_command(message: Message) -> None:
+    await _remember(message)
+    await message.answer(
+        texts.tariffs(),
+        reply_markup=keyboards.main_menu(),
+        disable_web_page_preview=True,
+    )
+
+
 @router.message(Command("stats"))
 async def stats_command(message: Message) -> None:
     user = message.from_user
@@ -158,6 +168,16 @@ async def stats_command(message: Message) -> None:
 @router.callback_query(F.data == "m:help")
 async def help_button(callback: CallbackQuery) -> None:
     await callback.message.edit_text(texts.HELP, reply_markup=keyboards.back())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "m:tariffs")
+async def tariffs_button(callback: CallbackQuery) -> None:
+    await callback.message.edit_text(
+        texts.tariffs(),
+        reply_markup=keyboards.back(),
+        disable_web_page_preview=True,
+    )
     await callback.answer()
 
 

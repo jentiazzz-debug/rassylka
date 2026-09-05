@@ -1181,6 +1181,65 @@ async def check_legal() -> None:
           "ключ авторизации" in legal.privacy().lower())
 
 
+async def check_tariffs_message() -> None:
+    print("\nТарифы сообщением в боте")
+    config.WEBAPP_URL = "https://example.com"
+    config.SUPPORT_URL = "https://t.me/support"
+    config.PLATEGA_MERCHANT = "m"
+    config.PLATEGA_SECRET = "s"
+    config.CRYPTO_TOKEN = "c"
+
+    message = texts.tariffs()
+
+    # Кнопка «Тарифы» должна открывать сообщение, а не уводить на сайт:
+    # цены смотрят перед оплатой, и уходить за ними из Telegram незачем.
+    buttons = [b for row in keyboards.main_menu().inline_keyboard for b in row]
+    tariff_buttons = [b for b in buttons if "Тариф" in b.text]
+    check("кнопка тарифов есть", len(tariff_buttons) == 1, str(len(tariff_buttons)))
+    check("она открывает сообщение, а не ссылку",
+          tariff_buttons[0].callback_data == "m:tariffs"
+          and not tariff_buttons[0].url,
+          str(tariff_buttons[0]))
+
+    # Страница при этом никуда не делась: банку нужен адрес, который
+    # открывается без Telegram.
+    urls = {b.url for b in buttons if b.url}
+    check("страница тарифов доступна из документов",
+          "https://example.com/support" in urls, str(sorted(urls)))
+    check("ссылка на страницу есть в самом сообщении",
+          "/tariffs" in message)
+
+    # Цены в сообщении и на странице — из одного источника.
+    page = legal.tariffs()
+    for plan in config.PLANS:
+        piece = f"{plan['stars']} {config.COIN_NAME}"
+        check(f"тариф {plan['days']} дн. в сообщении", piece in message, piece)
+        check(f"тариф {plan['days']} дн. на странице", piece in page, piece)
+    for pack in config.COIN_PACKS:
+        check(f"пачка {pack['coins']} за звёзды в сообщении",
+              f"{pack['coins']} за {pack['stars']} ⭐️" in message, str(pack))
+    for pack in config.RUB_PACKS:
+        check(f"пачка {pack['coins']} за рубли в сообщении",
+              f"{pack['coins']} за {pack['rub']:.0f} ₽" in message, str(pack))
+    for pack in config.CRYPTO_PACKS:
+        check(f"пачка {pack['coins']} за доллары в сообщении",
+              f"{pack['coins']} за ${pack['usd']:.0f}" in message, str(pack))
+
+    check("лимиты в сообщении",
+          str(config.DAILY_LIMIT) in message and str(config.MIN_INTERVAL) in message)
+    check("бесплатный период в сообщении", str(config.TRIAL_DAYS) in message)
+    check("кодовое слово в сообщении", "mellivora" in message)
+
+    # Способы, которые не подключены, в сообщении не обещаются.
+    config.PLATEGA_MERCHANT = ""
+    config.PLATEGA_SECRET = ""
+    config.CRYPTO_TOKEN = ""
+    lean = texts.tariffs()
+    check("без Platega рубли не обещаются", "₽" not in lean)
+    check("без CryptoBot доллары не обещаются", "$" not in lean)
+    check("звёзды остаются всегда", "⭐️" in lean)
+
+
 async def check_menu_buttons() -> None:
     print("\nКнопки документов в боте")
     config.WEBAPP_URL = "https://example.com"
@@ -1191,7 +1250,9 @@ async def check_menu_buttons() -> None:
 
     # Документы должны быть отдельными кнопками, а не за командой:
     # проверяющий из банка не станет искать /terms в списке команд.
-    for path in ("/terms", "/privacy", "/tariffs", "/support"):
+    # Тарифов здесь нет намеренно — они открываются сообщением в чате,
+    # это проверяется в check_tariffs_message.
+    for path in ("/terms", "/privacy", "/support"):
         check(f"кнопка на {path} есть",
               f"https://example.com{path}" in urls, str(sorted(urls)))
     check("кнопка приложения на месте",
@@ -1483,6 +1544,7 @@ async def run() -> None:
         await check_admin()
         await check_legal()
         await check_menu_buttons()
+        await check_tariffs_message()
         await check_platega()
         await check_variants()
         await check_joins()
