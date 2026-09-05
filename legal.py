@@ -32,16 +32,30 @@ def _today() -> str:
 
 
 def _operator() -> str:
-    """Строка «кто оказывает услугу» для шапки документов."""
-    if not config.LEGAL_NAME:
-        return (
-            '<span class="todo">реквизиты исполнителя не указаны — '
-            "заполните LEGAL_NAME и LEGAL_INN</span>"
-        )
+    """Кто оказывает услугу.
+
+    По умолчанию — только название сервиса, без ИП/ООО и ИНН: банк на
+    согласовании просил убрать эти сведения из бота и документов.
+    Данные никуда не делись, они лежат в LEGAL_* и включаются обратно
+    переменной LEGAL_SHOW_REQUISITES, когда касса зарегистрирована.
+    """
+    if not (config.LEGAL_SHOW_REQUISITES and config.LEGAL_NAME):
+        return escape(config.SERVICE_NAME)
     parts = [escape(config.LEGAL_NAME)]
     if config.LEGAL_INN:
         parts.append(f"ИНН {escape(config.LEGAL_INN)}")
     return ", ".join(parts)
+
+
+def _review_mark() -> str:
+    """Кодовое слово проверяющего. Пусто — ничего не показываем."""
+    if not config.REVIEW_CODE:
+        return ""
+    return (
+        '<p class="code">Кодовое слово: <b>'
+        + escape(config.REVIEW_CODE)
+        + "</b></p>"
+    )
 
 
 def _contacts_html() -> str:
@@ -95,6 +109,15 @@ ul, ol { padding-left: 22px; }
   border-radius: 5px;
   font-weight: 600;
 }
+.code {
+  margin: 0 0 18px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #eef4ff;
+  border: 1px solid #d6e4ff;
+  color: #1c3d7a;
+  font-size: 14px;
+}
 table { width: 100%; border-collapse: collapse; margin: 12px 0 6px; }
 th, td { padding: 10px 12px; border-bottom: 1px solid #eceff5; text-align: left; }
 th { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #6b7280; }
@@ -145,6 +168,7 @@ def _shell(title: str, current: str, body: str) -> str:
     <p class="meta">
       {escape(config.SERVICE_NAME)} · редакция от {escape(_today())}
     </p>
+    {_review_mark()}
     {body}
   </div>
   <footer>{escape(config.SERVICE_NAME)} · {_operator()}</footer>
@@ -262,7 +286,7 @@ Telegram-бота и веб-приложение внутри Telegram.</p>
 <h2>10. Отказ от гарантий</h2>
 <p>Сервис предоставляется на условиях «как есть». Исполнитель не
 гарантирует достижение Пользователем каких-либо коммерческих
-результатов, откликов или продаж и не несёт ответственности за
+результатов, откликов или заявок и не несёт ответственности за
 упущенную выгоду.</p>
 
 <h2>11. Изменение условий</h2>
@@ -517,8 +541,10 @@ def support() -> str:
 <p>При обращении по оплате укажите дату, сумму и способ платежа — так
 разбор занимает минуты, а не дни.</p>
 
-<h2>Реквизиты</h2>
+<h2>Исполнитель</h2>
 <p>{_operator()}</p>
+<p>Сведения о регистрации предоставляются по запросу в поддержку и
+платёжной организации.</p>
 
 <h2>Документы</h2>
 <ul>

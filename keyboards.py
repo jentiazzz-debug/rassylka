@@ -23,6 +23,13 @@ import config
 
 
 def main_menu() -> InlineKeyboardMarkup:
+    """Главное меню.
+
+    Документы стоят отдельными кнопками, а не спрятаны за командой: их
+    должно быть видно сразу, не листая переписку и не зная, что есть
+    /terms. Проверяющему из банка это первое, что нужно найти, а
+    обычному человеку — единственный способ прочитать условия до оплаты.
+    """
     builder = InlineKeyboardBuilder()
     if config.webapp_ready():
         builder.button(
@@ -31,8 +38,25 @@ def main_menu() -> InlineKeyboardMarkup:
         )
     if config.SUPPORT_URL:
         builder.button(text="💬 Поддержка", url=config.SUPPORT_URL)
+
+    if config.WEBAPP_URL:
+        base = config.WEBAPP_URL.rstrip("/")
+        builder.button(text="📄 Соглашение", url=f"{base}/terms")
+        builder.button(text="🔒 Конфиденциальность", url=f"{base}/privacy")
+        builder.button(text="💳 Тарифы", url=f"{base}/tariffs")
+        builder.button(text="🛟 Поддержка и документы", url=f"{base}/support")
+
     builder.button(text="❓ Как это работает", callback_data="m:help")
-    builder.adjust(1)
+
+    # Две узкие кнопки документов в ряд, остальное — по одной: адреса
+    # длинные, и в один столбец список выходит на пол-экрана.
+    if config.WEBAPP_URL:
+        rows = [1, 1, 2, 2, 1] if config.SUPPORT_URL else [1, 2, 2, 1]
+        if not config.webapp_ready():
+            rows = rows[1:]
+        builder.adjust(*rows)
+    else:
+        builder.adjust(1)
     return builder.as_markup()
 
 

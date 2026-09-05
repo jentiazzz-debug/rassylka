@@ -1115,28 +1115,54 @@ async def check_admin() -> None:
 
 async def check_legal() -> None:
     print("\nДокументы")
-    config.LEGAL_NAME = ""
-    config.LEGAL_INN = ""
-    blank = legal.terms()
-    check("без реквизитов документ честно говорит об этом",
-          "реквизиты исполнителя не указаны" in blank)
-
     config.LEGAL_NAME = "ИП Иванов Иван Иванович"
     config.LEGAL_INN = "770000000000"
     config.LEGAL_EMAIL = "support@example.com"
     config.LEGAL_DATE = "01.09.2026"
+    config.LEGAL_SHOW_REQUISITES = False
+    config.REVIEW_CODE = "mellivora"
 
     for path, render in legal.RENDERERS.items():
         html = render()
         check(f"{path} собирается", "<h1>" in html and "</html>" in html)
-        check(f"{path} с реквизитами",
-              "ИП Иванов" in html or path == "/tariffs", path)
-        check(f"{path} без незаполненных мест", "class=\"todo\"" not in html,
-              path)
         check(f"{path} с датой редакции", "01.09.2026" in html, path)
+        check(f"{path} без незаполненных мест", 'class="todo"' not in html,
+              path)
 
-    # Тарифы обязаны совпадать с конфигом: цена в документе, разъехавшаяся
-    # с ценой в приложении, — это то, за что согласование заворачивают.
+        # Банк на согласовании просил убрать ИП/ООО/ИНН из бота и
+        # документов — проверяем, что их там нет ни в каком виде.
+        check(f"{path} без ИНН", "ИНН" not in html, path)
+        check(f"{path} без имени ИП", "Иванов" not in html, path)
+
+        # И что кодовое слово проверяющего на месте.
+        check(f"{path} с кодовым словом", "mellivora" in html, path)
+
+        # Контакты поддержки банк требует отдельно — они остаются.
+        check(f"{path} с контактом поддержки",
+              "support@example.com" in html or path == "/tariffs", path)
+
+    # Про продажу аккаунтов, номеров, почт и соцсетей в документах не
+    # должно быть ни слова: это отдельное замечание банка.
+    for path, render in legal.RENDERERS.items():
+        low = render().lower()
+        for word in ("продажа номеров", "продam", "куплю аккаунт",
+                     "продажа аккаунт", "продам"):
+            check(f"{path} без «{word}»", word not in low, path)
+
+    # Реквизиты включаются обратно одной переменной, без правки текстов.
+    config.LEGAL_SHOW_REQUISITES = True
+    check("по флагу реквизиты возвращаются", "ИНН" in legal.terms())
+    config.LEGAL_SHOW_REQUISITES = False
+
+    # Кодовое слово убирается очисткой переменной — тоже без правок.
+    config.REVIEW_CODE = ""
+    check("без REVIEW_CODE слова нигде нет",
+          all("mellivora" not in render() for render in legal.RENDERERS.values()))
+    check("и в боте тоже нет", texts.review_line() == "")
+    config.REVIEW_CODE = "mellivora"
+    check("в боте слово появляется", "mellivora" in texts.review_line())
+
+    # Тарифы обязаны совпадать с конфигом.
     page = legal.tariffs()
     for plan in config.PLANS:
         check(f"тариф {plan['days']} дн. в документе",
@@ -1150,13 +1176,35 @@ async def check_legal() -> None:
     check("лимиты в документе",
           str(config.DAILY_LIMIT) in page and str(config.MIN_INTERVAL) in page)
     check("бесплатный период в документе", str(config.TRIAL_DAYS) in page)
-
-    # Контакты поддержки: банк требует не группу, а адресную связь.
-    support = legal.support()
-    check("почта поддержки на странице", "support@example.com" in support)
     check("порядок возврата описан", "возврат" in legal.terms().lower())
     check("что храним — описано",
           "ключ авторизации" in legal.privacy().lower())
+
+
+async def check_menu_buttons() -> None:
+    print("\nКнопки документов в боте")
+    config.WEBAPP_URL = "https://example.com"
+    config.SUPPORT_URL = "https://t.me/support"
+
+    buttons = [b for row in keyboards.main_menu().inline_keyboard for b in row]
+    urls = {b.url for b in buttons if b.url}
+
+    # Документы должны быть отдельными кнопками, а не за командой:
+    # проверяющий из банка не станет искать /terms в списке команд.
+    for path in ("/terms", "/privacy", "/tariffs", "/support"):
+        check(f"кнопка на {path} есть",
+              f"https://example.com{path}" in urls, str(sorted(urls)))
+    check("кнопка приложения на месте",
+          any(b.web_app for b in buttons))
+    check("кнопка поддержки на месте", "https://t.me/support" in urls)
+
+    # Без адреса приложения кнопок документов быть не может — вести
+    # некуда, и битая кнопка хуже отсутствующей.
+    config.WEBAPP_URL = ""
+    plain = [b for row in keyboards.main_menu().inline_keyboard for b in row]
+    check("без WEBAPP_URL кнопок документов нет",
+          not any((b.url or "").endswith("/terms") for b in plain))
+    config.WEBAPP_URL = "https://example.com"
 
 
 async def check_platega() -> None:
@@ -1434,6 +1482,7 @@ async def run() -> None:
         await check_materials()
         await check_admin()
         await check_legal()
+        await check_menu_buttons()
         await check_platega()
         await check_variants()
         await check_joins()

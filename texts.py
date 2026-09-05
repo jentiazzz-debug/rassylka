@@ -58,7 +58,9 @@ def start(name: str | None, subscription: db.Subscription) -> str:
         f"Первые {trial} {plural(trial, 'день', 'дня', 'дней')} — "
         "бесплатно. На бесплатном тарифе в конце каждого сообщения "
         "рассылки дописывается строка о том, каким ботом она сделана.\n\n"
-        "Всё управление — в приложении: нажмите кнопку ниже."
+        "Всё управление — в приложении: нажмите кнопку ниже.\n\n"
+        "Условия, политика и тарифы — кнопками под этим сообщением."
+        + review_line()
     )
 
 
@@ -187,6 +189,18 @@ def invite(link: str, stats: dict) -> str:
     )
 
 
+def review_line() -> str:
+    """Строка с кодовым словом. Пусто — переменная не задана.
+
+    Нужна на время согласования: проверяющий по ней убеждается, что
+    смотрит именно тот сервис, который подавали. Убирается очисткой
+    REVIEW_CODE, без правки текстов.
+    """
+    if not config.REVIEW_CODE:
+        return ""
+    return f"\n\nКодовое слово: <code>{escape(config.REVIEW_CODE)}</code>"
+
+
 def documents(base: str) -> str:
     base = base.rstrip("/")
     return (
@@ -194,7 +208,8 @@ def documents(base: str) -> str:
         f'• <a href="{escape(base)}/terms">Пользовательское соглашение</a>\n'
         f'• <a href="{escape(base)}/privacy">Политика конфиденциальности</a>\n'
         f'• <a href="{escape(base)}/tariffs">Тарифы и что входит в услугу</a>\n'
-        f'• <a href="{escape(base)}/support">Поддержка и реквизиты</a>'
+        f'• <a href="{escape(base)}/support">Поддержка и документы</a>'
+        + review_line()
     )
 
 
