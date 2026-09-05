@@ -1020,6 +1020,99 @@ async def check_materials() -> None:
     await db.delete_account(USER, account_id)
 
 
+async def check_admin() -> None:
+    print("\nАдминка")
+    from aiohttp.test_utils import TestClient, TestServer
+
+    config.ADMIN_IDS = {USER}
+    client = TestClient(TestServer(webapp.build()))
+    await client.start_server()
+    try:
+        paths = ("/api/admin/find", "/api/admin/user", "/api/admin/grant",
+                 "/api/admin/campaign", "/api/admin/stats")
+
+        # Чужому админские ручки не должны даже подтверждать своё
+        # существование: отвечаем 404, а не 403.
+        for path in paths:
+            answer = await client.post(
+                path, json={"id": USER},
+                headers={webapp.INIT_HEADER: init_data(OTHER)},
+            )
+            check(f"{path} чужому: не отдаётся", answer.status == 404,
+                  str(answer.status))
+
+        # Без подписи вообще — отказ по подписи.
+        for path in paths:
+            answer = await client.post(path, json={})
+            check(f"{path} без подписи: отказ", answer.status == 401,
+                  str(answer.status))
+
+        # Своему — открыто.
+        stats = await client.post(
+            "/api/admin/stats", json={},
+            headers={webapp.INIT_HEADER: init_data(USER)},
+        )
+        check("сводка админу отдаётся", stats.status == 200)
+        body = await stats.json()
+        check("в сводке есть люди", "users" in body.get("stats", {}), str(body))
+
+        # Поиск по id и по нику.
+        by_id = await (await client.post(
+            "/api/admin/find", json={"query": str(USER)},
+            headers={webapp.INIT_HEADER: init_data(USER)},
+        )).json()
+        check("поиск по id находит",
+              any(u["id"] == USER for u in by_id.get("users", [])), str(by_id))
+
+        # Карточка.
+        card = await (await client.post(
+            "/api/admin/user", json={"id": USER},
+            headers={webapp.INIT_HEADER: init_data(USER)},
+        )).json()
+        check("карточка собирается", card.get("ok") is True, str(card)[:120])
+        for key in ("user", "subscription", "accounts", "campaigns",
+                    "coins", "payments", "invoices", "sends"):
+            check(f"в карточке есть {key}", key in card["card"])
+
+        # Выдача монет и её след в журнале.
+        before = await db.coins_of(USER)
+        grant = await (await client.post(
+            "/api/admin/grant", json={"id": USER, "coins": 25},
+            headers={webapp.INIT_HEADER: init_data(USER)},
+        )).json()
+        check("монеты выдаются", grant.get("ok") is True, str(grant))
+        check("баланс вырос", await db.coins_of(USER) == before + 25)
+        history = await db.coin_history(USER, 3)
+        check("выдача помечена в журнале",
+              any("поддержки" in op["reason"] for op in history), str(history))
+
+        # Списание отрицательным числом.
+        await client.post(
+            "/api/admin/grant", json={"id": USER, "coins": -25},
+            headers={webapp.INIT_HEADER: init_data(USER)},
+        )
+        check("минус списывает", await db.coins_of(USER) == before)
+
+        # Защита от опечатки в поле.
+        huge = await (await client.post(
+            "/api/admin/grant", json={"id": USER, "coins": 10 ** 9},
+            headers={webapp.INIT_HEADER: init_data(USER)},
+        )).json()
+        check("нелепое число отбивается", huge.get("ok") is False, str(huge))
+        check("баланс не тронут", await db.coins_of(USER) == before)
+
+        # Несуществующий человек.
+        nobody = await (await client.post(
+            "/api/admin/grant", json={"id": 999999999, "coins": 5},
+            headers={webapp.INIT_HEADER: init_data(USER)},
+        )).json()
+        check("несуществующему не выдаётся", nobody.get("ok") is False,
+              str(nobody))
+    finally:
+        await client.close()
+        config.ADMIN_IDS = set()
+
+
 async def check_legal() -> None:
     print("\nДокументы")
     config.LEGAL_NAME = ""
@@ -1339,6 +1432,7 @@ async def run() -> None:
         await check_payments()
         await check_referrals()
         await check_materials()
+        await check_admin()
         await check_legal()
         await check_platega()
         await check_variants()

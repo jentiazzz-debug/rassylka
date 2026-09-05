@@ -252,6 +252,24 @@
     </p>
   </div>
 
+  <!-- Админка: разбор обращений. Раздел главного экрана, а не отдельный
+       экран: переключается той же нижней панелью, что и остальные. -->
+  <div id="pane-admin" class="pane" hidden>
+    <h2 class="section-title">Сводка</h2>
+    <div class="panel" id="admin-stats"></div>
+
+    <h2 class="section-title">Найти человека</h2>
+    <input id="admin-query" class="field" type="text"
+           placeholder="ID или @ник">
+    <button id="admin-find" class="btn primary">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+      Искать
+    </button>
+    <div class="panel" id="admin-results" hidden></div>
+
+    <div id="admin-card" hidden></div>
+  </div>
+
   </section>
 
   <!-- Нижняя панель разделов. Видна только на главном экране: на шагах
@@ -444,23 +462,6 @@
     <div class="panel" id="log-list"></div>
     <p id="log-empty" class="hint" hidden>Пока ничего не отправлено.</p>
     <button class="btn ghost" data-home>Назад</button>
-  <!-- Админка: разбор обращений. Видна только владельцу. -->
-  <div id="pane-admin" class="pane" hidden>
-    <h2 class="section-title">Сводка</h2>
-    <div class="panel" id="admin-stats"></div>
-
-    <h2 class="section-title">Найти человека</h2>
-    <input id="admin-query" class="field" type="text"
-           placeholder="ID или @ник">
-    <button id="admin-find" class="btn primary">
-      <svg class="ic" viewBox="0 0 24 24"><use href="#i-search"/></svg>
-      Искать
-    </button>
-    <div class="panel" id="admin-results" hidden></div>
-
-    <div id="admin-card" hidden></div>
-  </div>
-
   </section>
 
   <!-- Шаг 1: номер. -->
