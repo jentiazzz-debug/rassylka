@@ -118,6 +118,27 @@ ul, ol { padding-left: 22px; }
   color: #1c3d7a;
   font-size: 14px;
 }
+.plan {
+  border: 1px solid #e3e8f2;
+  border-radius: 14px;
+  padding: 16px 18px;
+  margin: 10px 0;
+  background: #fbfcfe;
+}
+.plan-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.plan-name { font-size: 17px; font-weight: 700; }
+.plan-days { color: #6b7280; font-size: 14px; }
+.save {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1f7a4d;
+  background: rgba(31, 122, 77, .12);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+.plan-price { font-size: 22px; font-weight: 700; margin-top: 6px; }
+.plan-hint { color: #4a5a7a; font-size: 14px; }
+.plan-note { color: #6b7280; font-size: 13px; margin-top: 6px; }
 table { width: 100%; border-collapse: collapse; margin: 12px 0 6px; }
 th, td { padding: 10px 12px; border-bottom: 1px solid #eceff5; text-align: left; }
 th { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: #6b7280; }
@@ -428,13 +449,39 @@ def _plan_name(days: int) -> str:
 
 
 def tariffs() -> str:
-    plans = "\n".join(
-        f"<tr><td>{_plan_name(plan['days'])}</td>"
-        f"<td class=\"num\">{plan['stars']} {escape(config.COIN_NAME)}</td>"
-        f"<td class=\"num\">{round(plan['stars'] / plan['days'])} "
-        f"{escape(config.COIN_NAME)}</td></tr>"
-        for plan in config.PLANS
-    )
+    """Страница тарифов.
+
+    Карточками, а не голой таблицей цен: человек и проверяющий должны
+    видеть не только сколько, но и за что и на каких условиях. Числа —
+    из config, из того же места, что и в боте.
+    """
+    import texts
+
+    plans = sorted(config.PLANS, key=lambda p: p["days"])
+    base = plans[0] if plans else None
+
+    cards = []
+    for index, plan in enumerate(plans):
+        saving = texts.plan_saving(plan, base)
+        badge = (
+            f'<span class="save">выгоднее на {saving}%</span>'
+            if saving >= 5 else ""
+        )
+        hint = texts.price_hint(plan["stars"])
+        per_day = round(plan["stars"] / plan["days"])
+        cards.append(f"""
+<div class="plan">
+  <div class="plan-head">
+    <span class="plan-name">{escape(texts.plan_name(plan['days']))}</span>
+    <span class="plan-days">{escape(texts.plan_period(plan['days']))}</span>
+    {badge}
+  </div>
+  <div class="plan-price">{plan['stars']} {escape(config.COIN_NAME)}</div>
+  <div class="plan-hint">{escape(hint)}</div>
+  <div class="plan-note">{per_day} {escape(config.COIN_NAME)} в день ·
+    {escape(texts.plan_audience(index, len(plans)))}</div>
+</div>""")
+
     stars = "\n".join(
         f"<tr><td>{pack['coins']} {escape(config.COIN_NAME)}</td>"
         f"<td class=\"num\">{pack['stars']} ⭐</td></tr>"
@@ -445,25 +492,43 @@ def tariffs() -> str:
         f"<td class=\"num\">{pack['rub']:.0f} ₽</td></tr>"
         for pack in config.RUB_PACKS
     )
+    crypto = "\n".join(
+        f"<tr><td>{pack['coins']} {escape(config.COIN_NAME)}</td>"
+        f"<td class=\"num\">${pack['usd']:.0f}</td></tr>"
+        for pack in config.CRYPTO_PACKS
+    )
+
     body = f"""
-<p>Оплата в Сервисе двухступенчатая: Пользователь пополняет счёт
-внутренними монетами ({escape(config.COIN_NAME)}), а затем оплачивает
-ими подписку. Монеты не сгорают и не имеют срока действия.</p>
+<p>Услуга — доступ к сервису рассылки по подписке. Подписка снимает
+автоматическую подпись о Сервисе в конце отправляемых сообщений и
+сохраняет доступ к рассылкам после пробного периода.</p>
+<p>Оплата двухступенчатая: Пользователь пополняет счёт внутренними
+монетами ({escape(config.COIN_NAME)}), а затем оплачивает ими подписку.
+Монеты не сгорают и не имеют срока действия.</p>
 
-<h2>Подписка</h2>
-<table>
-  <tr><th>Период</th><th>Стоимость</th><th>В день</th></tr>
-  {plans}
-</table>
-<p>Подписка снимает автоматическую подпись о Сервисе в конце
-отправляемых сообщений и сохраняет доступ к рассылкам после окончания
-пробного периода.</p>
+<h2>Тарифы подписки</h2>
+{''.join(cards)}
 
-<h2>Бесплатный период</h2>
-<p>Первые <b>{config.TRIAL_DAYS} дней</b> с момента первого запуска —
-бесплатно, все функции доступны. В течение пробного периода в конце
-каждого отправляемого сообщения автоматически добавляется строка с
-указанием Сервиса.</p>
+<h2>Что входит в любой тариф</h2>
+<ul>
+  <li>рассылка по группам, каналам и личным сообщениям;</li>
+  <li>до {config.MAX_ACCOUNTS} подключённых аккаунтов;</li>
+  <li>до {config.MAX_VARIANTS} вариантов сообщения в одной рассылке;</li>
+  <li>медиа и оформление из «Избранного» аккаунта;</li>
+  <li>журнал отправок по каждому чату;</li>
+  <li>поддержка.</li>
+</ul>
+
+<h2>Условия</h2>
+<ul>
+  <li>подписка начинается сразу после оплаты;</li>
+  <li>продление прибавляется к остатку, а не обнуляет его;</li>
+  <li>автоматических списаний нет — продление только вручную;</li>
+  <li>монеты не сгорают и не имеют срока действия;</li>
+  <li>первые <b>{config.TRIAL_DAYS} дней</b> — бесплатно, все функции
+      доступны; в это время в конце каждого отправляемого сообщения
+      добавляется строка с указанием Сервиса.</li>
+</ul>
 
 <h2>Пополнение счёта</h2>
 <h3 style="font-size:15px;margin:16px 0 4px;color:#6b7280">Telegram Stars</h3>
@@ -472,27 +537,23 @@ def tariffs() -> str:
   {stars}
 </table>
 
-<h3 style="font-size:15px;margin:18px 0 4px;color:#6b7280">Оплата рублями</h3>
+<h3 style="font-size:15px;margin:18px 0 4px;color:#6b7280">Карта или СБП</h3>
 <table>
   <tr><th>Пакет</th><th>Стоимость</th></tr>
   {rubles}
 </table>
-<p>Оплата рублями проходит через платёжную организацию: банковской
-картой или через Систему быстрых платежей. Данные карты вводятся на
-странице платёжной организации и Сервису не передаются.</p>
+<p>Оплата рублями проходит через платёжную организацию. Данные карты
+вводятся на её странице и Сервису не передаются.</p>
 
-<h2>Что входит в услугу</h2>
-<ul>
-  <li>подключение до {config.MAX_ACCOUNTS} аккаунтов Telegram;</li>
-  <li>рассылка по выбранным чатам, личным сообщениям и папкам;</li>
-  <li>до {config.MAX_VARIANTS} вариантов сообщения в одной рассылке;</li>
-  <li>журнал отправок по каждому чату;</li>
-  <li>поддержка.</li>
-</ul>
+<h3 style="font-size:15px;margin:18px 0 4px;color:#6b7280">Криптовалюта</h3>
+<table>
+  <tr><th>Пакет</th><th>Стоимость</th></tr>
+  {crypto}
+</table>
 
 <h2>Технические ограничения</h2>
-<p>Ограничения действуют всегда и не отключаются оплатой — они снижают
-риск ограничений со стороны Telegram для аккаунта Пользователя:</p>
+<p>Действуют всегда и не отключаются оплатой — они снижают риск
+ограничений со стороны Telegram для аккаунта Пользователя:</p>
 <table>
   <tr><th>Ограничение</th><th>Значение</th></tr>
   <tr><td>Минимальный интервал между сообщениями</td>

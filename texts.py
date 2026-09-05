@@ -189,6 +189,62 @@ def invite(link: str, stats: dict) -> str:
     )
 
 
+def plan_period(days: int) -> str:
+    if days == 1:
+        return "1 день"
+    if days >= 30:
+        return "30 дней"
+    return f"{days} {plural(days, 'день', 'дня', 'дней')}"
+
+
+def plan_name(days: int) -> str:
+    if days == 1:
+        return "День"
+    if days >= 30:
+        return "Месяц"
+    if days >= 7:
+        return "Неделя"
+    return plan_period(days)
+
+
+def plan_audience(index: int, total: int) -> str:
+    """Кому какой тариф. Определяется местом в списке, а не числом дней:
+    тарифы задаются в .env и могут быть любыми."""
+    if total == 1:
+        return "для любых задач"
+    if index == 0:
+        return "попробовать на своей базе, разовая рассылка"
+    if index == total - 1:
+        return "постоянная работа, несколько аккаунтов"
+    return "регулярные рассылки в несколько чатов"
+
+
+def plan_saving(plan: dict, base: dict) -> int:
+    """Насколько тариф выгоднее самого короткого, в процентах."""
+    if plan is base or not base["days"]:
+        return 0
+    per_day = plan["stars"] / plan["days"]
+    base_per_day = base["stars"] / base["days"]
+    if base_per_day <= 0:
+        return 0
+    return max(0, round((1 - per_day / base_per_day) * 100))
+
+
+def price_hint(coins: int) -> str:
+    """Во что монеты обходятся деньгами.
+
+    Цену в монетах человек не чувствует: «200 Slx» ни о чём не говорит,
+    пока рядом нет привычной суммы. Считается по тем же курсам, по
+    которым идёт пополнение, — отдельных чисел здесь не заводится.
+    """
+    parts = []
+    if config.platega_ready() and config.RUB_PER_COIN:
+        parts.append(f"≈ {round(coins * config.RUB_PER_COIN)} ₽")
+    if config.STARS_PER_COIN:
+        parts.append(f"{coins * config.STARS_PER_COIN} ⭐️")
+    return " или ".join(parts)
+
+
 def tariffs() -> str:
     """Тарифы сообщением в чате.
 
@@ -196,59 +252,100 @@ def tariffs() -> str:
     однажды разъедется, а разъехавшаяся цена — это спор с клиентом и
     вопрос от банка. Источник один.
     """
-    plans = "\n".join(
-        f"• {plan_period(plan['days'])} — <b>{plan['stars']} "
-        f"{escape(config.COIN_NAME)}</b>"
-        for plan in config.PLANS
-    )
+    plans = sorted(config.PLANS, key=lambda p: p["days"])
+    base = plans[0] if plans else None
 
-    stars = ", ".join(
-        f"{pack['coins']} за {pack['stars']} ⭐️" for pack in config.COIN_PACKS
-    )
-    ways = [f"• Telegram Stars: {stars}"]
+    blocks = []
+    for index, plan in enumerate(plans):
+        saving = plan_saving(plan, base)
+        name, period = plan_name(plan["days"]), plan_period(plan["days"])
+        # У однодневного тарифа название и срок совпадают — «День — 1
+        # день» читается как оговорка, а не как заголовок.
+        head = f"<b>{name}</b>" if name == period else f"<b>{name}</b> · {period}"
+        if saving >= 5:
+            head += f"  ·  выгоднее на {saving}%"
+        per_day = round(plan["stars"] / plan["days"])
+        hint = price_hint(plan["stars"])
+        blocks.append(
+            f"{head}\n"
+            f"<b>{plan['stars']} {escape(config.COIN_NAME)}</b>"
+            + (f" · {hint}" if hint else "")
+            + f"\n{per_day} {escape(config.COIN_NAME)} в день · "
+            + plan_audience(index, len(plans))
+        )
+
+    included = [
+        "рассылка по группам, каналам и личным сообщениям",
+        f"до {config.MAX_ACCOUNTS} подключённых аккаунтов",
+        f"до {config.MAX_VARIANTS} вариантов сообщения в одной рассылке",
+        "медиа и оформление из «Избранного»",
+        "журнал отправок по каждому чату",
+        "поддержка",
+    ]
+
+    conditions = [
+        "подписка начинается сразу после оплаты",
+        "продление прибавляется к остатку, а не обнуляет его",
+        "автосписаний нет — продлевать нужно вручную",
+        "монеты не сгорают и не имеют срока действия",
+    ]
+
+    ways = [
+        "• Telegram Stars: "
+        + ", ".join(
+            f"{pack['coins']} за {pack['stars']} ⭐️"
+            for pack in config.COIN_PACKS
+        )
+    ]
     if config.platega_ready() and config.RUB_PACKS:
-        rubles = ", ".join(
-            f"{pack['coins']} за {pack['rub']:.0f} ₽" for pack in config.RUB_PACKS
+        ways.append(
+            "• Карта или СБП: "
+            + ", ".join(
+                f"{pack['coins']} за {pack['rub']:.0f} ₽"
+                for pack in config.RUB_PACKS
+            )
         )
-        ways.append(f"• Карта или СБП: {rubles}")
     if config.CRYPTO_TOKEN and config.CRYPTO_PACKS:
-        crypto = ", ".join(
-            f"{pack['coins']} за ${pack['usd']:.0f}"
-            for pack in config.CRYPTO_PACKS
+        ways.append(
+            "• Криптовалютой: "
+            + ", ".join(
+                f"{pack['coins']} за ${pack['usd']:.0f}"
+                for pack in config.CRYPTO_PACKS
+            )
         )
-        ways.append(f"• Криптовалютой: {crypto}")
 
     trial = config.TRIAL_DAYS
     text = (
         "💳 <b>Тарифы</b>\n\n"
-        "Подписка покупается за монеты "
-        f"({escape(config.COIN_NAME)}), монеты не сгорают.\n\n"
-        f"<b>Подписка</b>\n{plans}\n\n"
-        f"<b>Пополнение</b>\n" + "\n".join(ways) + "\n\n"
-        f"<b>Бесплатно</b>\nПервые {trial} "
-        f"{plural(trial, 'день', 'дня', 'дней')} — все функции. "
-        "В это время в конце каждого сообщения рассылки дописывается "
-        "строка о сервисе; подписка её убирает.\n\n"
-        "<b>Ограничения</b> (действуют всегда, оплатой не снимаются)\n"
-        f"• не чаще одного сообщения в {config.MIN_INTERVAL} с\n"
+        "Подписка снимает подпись о сервисе в конце отправляемых "
+        "сообщений и оставляет рассылки работать после пробного "
+        f"периода. Платят монетами ({escape(config.COIN_NAME)}), монеты "
+        "покупаются отдельно.\n\n"
+        + "\n\n".join(blocks)
+        + "\n\n<b>Что входит в любой тариф</b>\n"
+        + "\n".join(f"• {line}" for line in included)
+        + "\n\n<b>Условия</b>\n"
+        + "\n".join(f"• {line}" for line in conditions)
+        + f"\n• бесплатно первые {trial} "
+        + plural(trial, "день", "дня", "дней")
+        + ": все функции, но в конце каждого сообщения дописывается "
+        "строка о сервисе"
+        + "\n\n<b>Как пополнить монеты</b>\n"
+        + "\n".join(ways)
+        + "\n\n<b>Ограничения</b> — действуют всегда, оплатой не "
+        "снимаются:\n"
+        f"• не чаще одного сообщения в {config.MIN_INTERVAL} секунд\n"
         f"• не больше {config.DAILY_LIMIT} сообщений в сутки с аккаунта\n"
-        f"• до {config.MAX_ACCOUNTS} подключённых аккаунтов"
+        "Они снижают риск ограничений со стороны Telegram для вашего "
+        "аккаунта."
     )
     if config.WEBAPP_URL:
-        base = config.WEBAPP_URL.rstrip("/")
+        base_url = config.WEBAPP_URL.rstrip("/")
         text += (
-            f'\n\nПолные условия — <a href="{escape(base)}/tariffs">'
-            "на странице тарифов</a>."
+            f'\n\n<a href="{escape(base_url)}/tariffs">Полные условия и '
+            f'возврат</a> · <a href="{escape(base_url)}/terms">Соглашение</a>'
         )
     return text + review_line()
-
-
-def plan_period(days: int) -> str:
-    if days == 1:
-        return "1 день"
-    if days >= 30:
-        return "30 дней"
-    return f"{days} {plural(days, 'день', 'дня', 'дней')}"
 
 
 def review_line() -> str:
