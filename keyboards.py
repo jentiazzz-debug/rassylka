@@ -29,6 +29,14 @@ ACTIONS = {
     "help": "m:help",
 }
 
+#: Премиум-эмодзи и цвет на кнопках главного меню. Telegram принимает их
+#: полями icon_custom_emoji_id и style — старые клиенты про них не знают
+#: и просто покажут кнопку без значка, поэтому подпись у каждой кнопки
+#: осмысленная сама по себе.
+APP_EMOJI = "5870994129244131212"
+DOCS_EMOJI = "5870528606328852614"
+SUPPORT_EMOJI = "5260535596941582167"
+
 
 def main_menu(custom: list[dict] | None = None) -> InlineKeyboardMarkup:
     """Главное меню: приложение, поддержка и одна кнопка «Документы».
@@ -74,18 +82,29 @@ def main_menu(custom: list[dict] | None = None) -> InlineKeyboardMarkup:
     if not custom:
         if config.webapp_ready():
             builder.button(
-                text="🚀 Открыть приложение",
+                text="Открыть приложение",
                 web_app=WebAppInfo(url=config.WEBAPP_URL),
+                icon_custom_emoji_id=APP_EMOJI,
+                style="primary",
             )
 
     # Поддержка и документы — вторым рядом, рядом друг с другом.
     support_row = 0
     if config.SUPPORT_URL and not custom:
-        builder.button(text="💬 Поддержка", url=config.SUPPORT_URL)
+        builder.button(
+            text="Поддержка",
+            url=config.SUPPORT_URL,
+            icon_custom_emoji_id=SUPPORT_EMOJI,
+            style="primary",
+        )
         support_row += 1
     # Кнопка документов есть всегда, даже поверх своих кнопок владельца:
     # её требует банк, и убрать её из меню нельзя.
-    builder.button(text="📄 Документы", callback_data="m:docs")
+    builder.button(
+        text="Документы",
+        callback_data="m:docs",
+        icon_custom_emoji_id=DOCS_EMOJI,
+    )
     support_row += 1
 
     if custom:
