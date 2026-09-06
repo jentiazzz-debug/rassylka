@@ -1543,6 +1543,23 @@ async def set_campaign_status_admin(campaign_id: int, status: str) -> bool:
 # --- статистика для админа --------------------------------------------
 
 
+async def all_recipients() -> list[dict]:
+    """Кому уходит рассылка владельца — всем, кто когда-либо жал /start.
+
+    Отсортировано по последнему появлению: если рассылка упрётся в
+    лимиты Telegram и её придётся оборвать, первыми получат сообщение
+    те, кто заходил недавно.
+
+    Имя и ник берём здесь же: в рассылке они нужны для подстановки, а
+    отдельный запрос на каждого получателя — это лишняя тысяча запросов
+    к базе на ровном месте.
+    """
+    rows = await _fetchall(
+        "SELECT user_id, username, name FROM users ORDER BY seen_at DESC"
+    )
+    return [dict(row) for row in rows]
+
+
 async def stats() -> dict[str, int]:
     now = int(time.time())
     row = await _fetchone(

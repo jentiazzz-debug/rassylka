@@ -20,6 +20,7 @@ import json
 import config
 import db
 import keyboards
+import richtext
 import texts
 
 log = logging.getLogger("rassylka.handlers")
@@ -116,12 +117,30 @@ async def custom_buttons() -> list[dict] | None:
 async def send_start(bot, chat_id: int, user, preview: bool = False) -> None:
     """Приветствие: своё, настроенное владельцем, либо обычное.
 
-    Своё копируется, а не пересобирается: `copy_message` переносит фото,
-    гифку, кружок, премиум-эмодзи и разметку целиком. Разбирать и
-    собирать заново — значит потерять половину: у премиум-эмодзи нужен
-    доступ к их документам, у медиа свои file_id.
+    Своих приветствий два вида, и различаются они не оформлением, а тем,
+    можно ли в них подставлять переменные.
+
+    **Медиа-приветствие** копируется целиком через `copy_message`: так
+    доезжают фото, гифка, кружок, стикер, премиум-эмодзи и разметка.
+    Разбирать и собирать заново — значит потерять половину: у
+    премиум-эмодзи нужен доступ к их документам, у медиа свои file_id.
+    Но копия — она и есть копия: одинаковая для всех, подставить в неё
+    имя невозможно.
+
+    **Текст с переменными** хранится текстом и сущностями, поэтому в нём
+    работают и `{name}`, и жирный с цитатой и премиум-эмодзи, — но медиа
+    в нём нет. Что из двух показывать, решает владелец в /admin; текст
+    проверяется первым, потому что владелец задаёт его последним.
     """
     markup = keyboards.main_menu(await custom_buttons())
+
+    raw = await db.setting("menu_text")
+    if raw:
+        values = await richtext.values_for(user, db)
+        text, entities = richtext.apply(raw, richtext.load(
+            await db.setting("menu_entities")), values)
+        await richtext.send(bot, chat_id, text, entities, markup)
+        return
 
     chat = await db.setting("menu_chat_id")
     msg_id = await db.setting("menu_msg_id")

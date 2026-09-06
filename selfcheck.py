@@ -51,6 +51,7 @@ import handlers  # noqa: E402
 import keyboards  # noqa: E402
 import legal  # noqa: E402
 import payments  # noqa: E402
+import richtext  # noqa: E402
 import platega  # noqa: E402
 import tdata  # noqa: E402
 import texts  # noqa: E402
@@ -1350,6 +1351,209 @@ async def check_menu_buttons() -> None:
     config.WEBAPP_URL = "https://example.com"
 
 
+async def check_variables() -> None:
+    print("\nПеременные в тексте и оформление")
+
+    # Главное здесь — сдвиг сущностей. Разметку Telegram задаёт не
+    # тегами, а координатами «с такого символа, столько символов», и
+    # подстановка имени сдвигает всё, что правее. Ошибка в сдвиге видна
+    # не как поломка, а как жирный кусок соседнего слова.
+    text = "Привет, {name}! Баланс: {balance}"
+    entities = [
+        {"type": "bold", "offset": 0, "length": 6},          # «Привет»
+        {"type": "italic", "offset": 16, "length": 7},       # «Баланс:»
+    ]
+    out, ents = richtext.apply(text, entities, {"name": "Аня", "balance": 40})
+    check("переменные подставились", out == "Привет, Аня! Баланс: 40", out)
+    check("сущность слева не сдвинулась",
+          ents[0]["offset"] == 0 and ents[0]["length"] == 6, str(ents[0]))
+    check("сущность справа поехала на разницу длин",
+          out[ents[1]["offset"]:ents[1]["offset"] + ents[1]["length"]] == "Баланс:",
+          str(ents[1]) + " → " + repr(out))
+
+    # Эмодзи в UTF-16 занимает две позиции, а в Python — одну. Считать
+    # смещения обычным len() значит разъехаться ровно на эту разницу.
+    text = "🔥 {name} — молодец"
+    entities = [{"type": "bold", "offset": 12, "length": 7}]  # «молодец»
+    out, ents = richtext.apply(text, entities, {"name": "Ян"})
+    piece = out.encode("utf-16-le")[ents[0]["offset"] * 2:
+                                    (ents[0]["offset"] + ents[0]["length"]) * 2]
+    check("смещения считаются в UTF-16, а не в символах",
+          piece.decode("utf-16-le") == "молодец", repr(out))
+
+    # Премиум-эмодзи — такая же сущность, и она обязана пережить
+    # подстановку: ради неё половина этой затеи.
+    text = "{name}, привет"
+    entities = [{"type": "custom_emoji", "offset": 0, "length": 6,
+                 "custom_emoji_id": "5870994129244131212"}]
+    out, ents = richtext.apply(text, entities, {"name": "Кот"})
+    check("премиум-эмодзи переживает подстановку",
+          ents and ents[0]["custom_emoji_id"] == "5870994129244131212",
+          str(ents))
+    check("и растягивается вместе с текстом внутри",
+          ents[0]["length"] == 3, str(ents))
+
+    # Пустая подстановка (человек без ника) не должна оставлять сущность
+    # нулевой длины: Telegram такую не примет и отобьёт всё сообщение.
+    text = "{username} тут"
+    entities = [{"type": "bold", "offset": 0, "length": 10}]
+    out, ents = richtext.apply(text, entities, {"username": ""})
+    check("сущность нулевой длины выброшена", ents == [], str(ents))
+
+    # Незнакомое в скобках не трогаем — иначе опечатка молча съела бы
+    # кусок текста.
+    out, _ = richtext.apply("{нетакой} {name}", [], {"name": "Ян"})
+    check("неизвестная переменная остаётся как есть",
+          out == "{нетакой} Ян", out)
+
+    # Запасной путь: если Telegram откажет в премиум-эмодзи, сообщение
+    # уходит без значков, а не пропадает.
+    mixed = [{"type": "bold", "offset": 0, "length": 3},
+             {"type": "custom_emoji", "offset": 4, "length": 2}]
+    check("премиум-эмодзи опознаётся", richtext.has_custom_emoji(mixed))
+    left = richtext.drop_custom_emoji(mixed)
+    check("без него остальное оформление цело",
+          len(left) == 1 and left[0]["type"] == "bold", str(left))
+
+    # Сохранение и чтение из базы.
+    check("битые сущности из базы не роняют бота", richtext.load("{не json") == [])
+    check("сущности переживают JSON",
+          richtext.load(richtext.dump(mixed))[1]["type"] == "custom_emoji")
+
+    # Приветствие с переменными подменяет собой копию: два приветствия
+    # одновременно жить не могут, и текст должен быть главнее.
+    await db.ensure_user(USER, "test", "Тест Тестов")
+    values = await richtext.values_for(
+        richtext.person({"user_id": USER, "username": "test", "name": "Тест Тестов"}),
+        db,
+    )
+    check("имя берётся из базы", values["name"] == "Тест", str(values))
+    check("ник приходит с собакой", values["username"] == "@test", str(values))
+    check("баланс подставляется числом", isinstance(values["balance"], int))
+    check("состояние подписки словами", bool(values["tariff"]), str(values))
+
+    for key in ("menu_text", "menu_entities"):
+        check(f"ключ {key} есть в списке сброса", key in admin.KEYS)
+
+    # И самое важное — что /start вообще пойдёт по этой ветке. Настройка,
+    # которая сохраняется, но не показывается, выглядит как работающая.
+    class FakeBot:
+        def __init__(self):
+            self.sent = None
+            self.copied = None
+
+        async def send_message(self, chat_id, text, **kwargs):
+            self.sent = (text, kwargs)
+
+        async def copy_message(self, **kwargs):
+            self.copied = kwargs
+
+    await db.set_setting("menu_text", "Привет, {name}! Монет: {balance}")
+    await db.set_setting("menu_entities", json.dumps(
+        [{"type": "bold", "offset": 0, "length": 6}]))
+    bot = FakeBot()
+    await handlers.send_start(
+        bot, USER,
+        richtext.person({"user_id": USER, "username": "test", "name": "Тест"}),
+    )
+    check("/start показывает текст с переменными", bot.sent is not None)
+    check("имя подставилось в приветствие",
+          bot.sent and "Привет, Тест!" in bot.sent[0], str(bot.sent))
+    check("оформление доехало сущностями",
+          bot.sent and bot.sent[1].get("entities"), str(bot.sent))
+    check("общий parse_mode заглушён",
+          bot.sent and bot.sent[1].get("parse_mode") is None, str(bot.sent))
+    check("копирования при этом не было", bot.copied is None)
+
+    # Копия-приветствие не должна перебивать текст, если владелец задал
+    # оба: send_start смотрит текст первым — иначе выбор в /admin ничего
+    # не решал бы.
+    await db.set_setting("menu_chat_id", "1")
+    await db.set_setting("menu_msg_id", "2")
+    bot = FakeBot()
+    await handlers.send_start(bot, USER, None)
+    check("текст главнее старой копии",
+          bot.sent is not None and bot.copied is None, str(bot.copied))
+
+    await db.set_setting("menu_text", None)
+    bot = FakeBot()
+    await handlers.send_start(bot, USER, None)
+    check("без текста возвращается копия", bot.copied is not None)
+    for key in ("menu_chat_id", "menu_msg_id", "menu_entities"):
+        await db.set_setting(key, None)
+
+
+async def check_cast_buttons() -> None:
+    print("\nКнопки с эмодзи и цветом, рассылка по людям")
+    config.WEBAPP_URL = "https://example.com"
+    config.SUPPORT_URL = "https://t.me/support"
+
+    raw = (
+        "Наш канал | https://t.me/channel\n"
+        "Открыть | app | 5870994129244131212 | голубая\n"
+        "Цены | tariffs | | зелёная\n"
+        "Мусор | javascript:alert(1)\n"
+        "Без адреса |\n"
+        "Ерунда | https://t.me/x | синий-в-крапинку"
+    )
+    items, bad = keyboards.parse_buttons(raw)
+    by_text = {item["text"]: item for item in items}
+
+    check("ссылка разобралась", "Наш канал" in by_text, str(by_text))
+    check("короткое слово разобралось",
+          by_text.get("Открыть", {}).get("action") == "app", str(by_text))
+    check("премиум-эмодзи попал в кнопку",
+          by_text.get("Открыть", {}).get("emoji") == "5870994129244131212",
+          str(by_text))
+    check("цвет по-русски понят",
+          by_text.get("Открыть", {}).get("style") == "primary", str(by_text))
+    check("пустое поле эмодзи пропускается",
+          by_text.get("Цены", {}).get("style") == "success"
+          and "emoji" not in by_text.get("Цены", {}), str(by_text))
+
+    # Непонятое не проглатываем молча: владелец будет думать, что кнопка
+    # есть, а её нет.
+    check("мусорная схема не кнопка", "Мусор" not in by_text, str(by_text))
+    check("строка без адреса не кнопка", "Без адреса" not in by_text, str(by_text))
+    check("непонятный цвет не кнопка", "Ерунда" not in by_text, str(by_text))
+    check("о непонятых строках сказано", len(bad) == 3, str(bad))
+
+    # Серая — это отсутствие цвета, а не слово "серая" в поле style.
+    grey, _ = keyboards.parse_buttons("Док | tariffs | | серая")
+    check("серая кнопка идёт без стиля", "style" not in grey[0], str(grey))
+
+    # Клавиатура под сообщением рассылки.
+    markup = keyboards.cast_markup(items)
+    flat = [b for row in markup.inline_keyboard for b in row]
+    check("кнопки собрались в клавиатуру", len(flat) == 3, str(len(flat)))
+    check("по одной кнопке в ряд",
+          all(len(row) == 1 for row in markup.inline_keyboard))
+    app_button = next(b for b in flat if b.web_app)
+    check("эмодзи доехал до кнопки",
+          app_button.icon_custom_emoji_id == "5870994129244131212", str(app_button))
+    check("цвет доехал до кнопки", app_button.style == "primary", str(app_button))
+    check("без кнопок клавиатуры нет", keyboards.cast_markup([]) is None)
+    check("из одних мусорных строк клавиатуры тоже нет",
+          keyboards.cast_markup([{"text": "x", "url": "javascript:1"}]) is None)
+
+    # Оформление работает и в главном меню, а не только в рассылке.
+    menu = [b for row in keyboards.main_menu(items).inline_keyboard for b in row]
+    styled = next(b for b in menu if b.text == "Открыть")
+    check("своя кнопка меню тоже с эмодзи и цветом",
+          styled.icon_custom_emoji_id == "5870994129244131212"
+          and styled.style == "primary", str(styled))
+
+    # Получатели рассылки: все, кто заходил, свежие первыми.
+    await db.ensure_user(USER, "test", "Тест Тестов")
+    await db.ensure_user(OTHER, None, None)
+    people = await db.all_recipients()
+    ids = [row["user_id"] for row in people]
+    check("получатели — все заведённые",
+          USER in ids and OTHER in ids, str(ids))
+    check("имя и ник приходят вместе с id",
+          all("username" in row and "name" in row for row in people), str(people))
+
+
 async def check_platega() -> None:
     print("\nОплата рублями (Platega)")
     config.PLATEGA_MERCHANT = "merchant-123"
@@ -1628,6 +1832,8 @@ async def run() -> None:
         await check_legal()
         await check_menu_buttons()
         await check_tariffs_message()
+        await check_variables()
+        await check_cast_buttons()
         await check_platega()
         await check_variants()
         await check_joins()

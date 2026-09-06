@@ -38,6 +38,125 @@ DOCS_EMOJI = "5870528606328852614"
 SUPPORT_EMOJI = "5260535596941582167"
 
 
+#: Цвета кнопок. Telegram знает три: primary — голубая, success —
+#: зелёная, danger — красная. Четвёртого нет: серая кнопка — это кнопка
+#: без цвета, поэтому «серая» тут даёт None, а не строку.
+STYLES = {
+    "primary": "primary",
+    "голубая": "primary",
+    "синяя": "primary",
+    "success": "success",
+    "зелёная": "success",
+    "зеленая": "success",
+    "danger": "danger",
+    "красная": "danger",
+    "серая": None,
+    "обычная": None,
+}
+
+
+def parse_buttons(raw: str) -> tuple[list[dict], list[str]]:
+    """Разобрать список кнопок из текста владельца.
+
+    Формат строки: <code>Текст | куда | эмодзи | цвет</code>, и всё после
+    первых двух полей необязательно. Один формат и для меню, и для
+    рассылки — владельцу не нужно помнить два.
+
+    Возвращает разобранные кнопки и строки, которые понять не удалось.
+    Непонятые не проглатываем: иначе владелец уверен, что кнопка есть, а
+    её нет.
+    """
+    items, bad = [], []
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split("|")]
+        text, target = (parts + ["", ""])[:2]
+        if not text or not target:
+            bad.append(line)
+            continue
+
+        item = {"text": text[:64]}
+        if target in ACTIONS or target == "app" or target == "support":
+            item["action"] = target
+        elif target.startswith(("https://", "http://", "tg://")):
+            item["url"] = target
+        else:
+            bad.append(line)
+            continue
+
+        for extra in parts[2:]:
+            if extra.isdigit():
+                item["emoji"] = extra
+            elif extra.lower() in STYLES:
+                style = STYLES[extra.lower()]
+                if style:
+                    item["style"] = style
+            elif extra:
+                bad.append(line)
+                break
+        else:
+            items.append(item)
+            continue
+        # break выше — строку уже записали в непонятые.
+    return items, bad
+
+
+def _decorate(item: dict) -> dict:
+    """Оформление кнопки — премиум-эмодзи и цвет — в вид aiogram.
+
+    Старые клиенты этих полей не знают и покажут кнопку без значка и
+    цвета, поэтому подпись у кнопки должна быть осмысленной сама по
+    себе. Ломаться от этого ничего не ломается.
+    """
+    extra = {}
+    if item.get("emoji"):
+        extra["icon_custom_emoji_id"] = str(item["emoji"])
+    if item.get("style"):
+        extra["style"] = item["style"]
+    return extra
+
+
+def cast_markup(items: list[dict] | None) -> InlineKeyboardMarkup | None:
+    """Кнопки под сообщением рассылки владельца — по одной в ряд.
+
+    Тут рассылает бот, а не подключённый аккаунт, поэтому инлайн-кнопки
+    возможны: MTProto не даёт обычному аккаунту прикрепить клавиатуру,
+    Bot API боту — даёт.
+    """
+    if not items:
+        return None
+    builder = InlineKeyboardBuilder()
+    rows = 0
+    for item in items:
+        text = str(item.get("text") or "").strip()[:64]
+        if not text:
+            continue
+        extra = _decorate(item)
+        action = item.get("action")
+        if action == "app":
+            if not config.webapp_ready():
+                continue
+            builder.button(text=text, web_app=WebAppInfo(url=config.WEBAPP_URL), **extra)
+        elif action == "support":
+            if not config.SUPPORT_URL:
+                continue
+            builder.button(text=text, url=config.SUPPORT_URL, **extra)
+        elif action in ACTIONS:
+            builder.button(text=text, callback_data=ACTIONS[action], **extra)
+        else:
+            url = str(item.get("url") or "").strip()
+            if not url.startswith(("https://", "http://", "tg://")):
+                continue
+            builder.button(text=text, url=url, **extra)
+        rows += 1
+    if not rows:
+        return None
+    builder.adjust(*([1] * rows))
+    return builder.as_markup()
+
+
 def main_menu(custom: list[dict] | None = None) -> InlineKeyboardMarkup:
     """Главное меню: приложение, поддержка и одна кнопка «Документы».
 
@@ -59,24 +178,27 @@ def main_menu(custom: list[dict] | None = None) -> InlineKeyboardMarkup:
         text = str(item.get("text") or "").strip()[:64]
         if not text:
             continue
+        extra = _decorate(item)
         action = item.get("action")
         if action == "app":
             if config.webapp_ready():
-                builder.button(text=text, web_app=WebAppInfo(url=config.WEBAPP_URL))
+                builder.button(
+                    text=text, web_app=WebAppInfo(url=config.WEBAPP_URL), **extra
+                )
                 custom_rows += 1
             continue
         if action == "support":
             if config.SUPPORT_URL:
-                builder.button(text=text, url=config.SUPPORT_URL)
+                builder.button(text=text, url=config.SUPPORT_URL, **extra)
                 custom_rows += 1
             continue
         if action in ACTIONS:
-            builder.button(text=text, callback_data=ACTIONS[action])
+            builder.button(text=text, callback_data=ACTIONS[action], **extra)
             custom_rows += 1
             continue
         url = str(item.get("url") or "").strip()
         if url.startswith(("https://", "http://", "tg://")):
-            builder.button(text=text, url=url)
+            builder.button(text=text, url=url, **extra)
             custom_rows += 1
 
     if not custom:
