@@ -219,7 +219,20 @@ async def stats_command(message: Message) -> None:
 
 @router.callback_query(F.data == "m:help")
 async def help_button(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(texts.HELP, reply_markup=keyboards.back())
+    await callback.message.edit_text(
+        texts.HELP, reply_markup=keyboards.docs_menu()
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "m:docs")
+async def docs_button(callback: CallbackQuery) -> None:
+    await callback.message.edit_text(
+        texts.documents(config.WEBAPP_URL) if config.WEBAPP_URL
+        else texts.NO_WEBAPP,
+        reply_markup=keyboards.docs_menu(),
+        disable_web_page_preview=True,
+    )
     await callback.answer()
 
 
@@ -227,7 +240,7 @@ async def help_button(callback: CallbackQuery) -> None:
 async def tariffs_button(callback: CallbackQuery) -> None:
     await callback.message.edit_text(
         texts.tariffs(),
-        reply_markup=keyboards.back(),
+        reply_markup=keyboards.docs_menu(),
         disable_web_page_preview=True,
     )
     await callback.answer()

@@ -31,12 +31,16 @@ ACTIONS = {
 
 
 def main_menu(custom: list[dict] | None = None) -> InlineKeyboardMarkup:
-    """Главное меню.
+    """Главное меню: приложение, поддержка и одна кнопка «Документы».
 
-    Документы стоят отдельными кнопками, а не спрятаны за командой: их
-    должно быть видно сразу, не листая переписку и не зная, что есть
-    /terms. Проверяющему из банка это первое, что нужно найти, а
-    обычному человеку — единственный способ прочитать условия до оплаты.
+    Документы собраны под одну кнопку, а не разложены пятью подряд.
+    Пять служебных кнопок занимали больше места, чем всё остальное меню,
+    и главное — «Открыть приложение» тонуло среди них.
+
+    Из-под кнопки они открываются в один тап, и там же лежат тарифы,
+    соглашение, политика и поддержка — то, что просил показывать банк.
+    Прямые пути тоже остались: команды /terms, /tariffs и /support
+    работают без всякого меню.
     """
     builder = InlineKeyboardBuilder()
     custom_rows = 0
@@ -73,38 +77,51 @@ def main_menu(custom: list[dict] | None = None) -> InlineKeyboardMarkup:
                 text="🚀 Открыть приложение",
                 web_app=WebAppInfo(url=config.WEBAPP_URL),
             )
-        if config.SUPPORT_URL:
-            builder.button(text="💬 Поддержка", url=config.SUPPORT_URL)
 
-    # Документы добавляются всегда, даже поверх своих кнопок: их
-    # требует банк, и убрать их из меню владелец не может.
+    # Поддержка и документы — вторым рядом, рядом друг с другом.
+    support_row = 0
+    if config.SUPPORT_URL and not custom:
+        builder.button(text="💬 Поддержка", url=config.SUPPORT_URL)
+        support_row += 1
+    # Кнопка документов есть всегда, даже поверх своих кнопок владельца:
+    # её требует банк, и убрать её из меню нельзя.
+    builder.button(text="📄 Документы", callback_data="m:docs")
+    support_row += 1
+
+    if custom:
+        builder.adjust(*([1] * custom_rows + [support_row]))
+    else:
+        head = [1] if config.webapp_ready() else []
+        builder.adjust(*(head + [support_row]))
+    return builder.as_markup()
+
+
+def docs_menu() -> InlineKeyboardMarkup:
+    """Что открывается под кнопкой «Документы».
+
+    Соглашение, политика и поддержка — ссылками на страницы: банку нужен
+    адрес, открывающийся без Telegram. Тарифы — сообщением в чате: цены
+    смотрят перед оплатой, и уводить за ними из Telegram незачем.
+    """
+    builder = InlineKeyboardBuilder()
+    rows = []
+
     if config.WEBAPP_URL:
         base = config.WEBAPP_URL.rstrip("/")
         builder.button(text="📄 Соглашение", url=f"{base}/terms")
         builder.button(text="🔒 Конфиденциальность", url=f"{base}/privacy")
-        builder.button(text="🛟 Поддержка и документы", url=f"{base}/support")
+        rows.append(2)
+        builder.button(text="🛟 Поддержка и реквизиты", url=f"{base}/support")
+        rows.append(1)
 
-    # Тарифы — не ссылкой, а сообщением прямо в чате: цены человек
-    # смотрит перед оплатой, и уводить его за ними из Telegram незачем.
-    # Страница /tariffs при этом остаётся — банку нужен адрес, который
-    # открывается без Telegram.
     builder.button(text="💳 Тарифы", callback_data="m:tariffs")
     builder.button(text="❓ Как это работает", callback_data="m:help")
+    rows.append(2)
 
-    # Две узкие кнопки документов в ряд, остальное — по одной: адреса
-    # длинные, и в один столбец список выходит на пол-экрана.
-    if custom:
-        # Свои кнопки — по одной в строке: тексты у них произвольные, и
-        # две длинные подписи рядом не помещаются.
-        tail = [2, 1, 2] if config.WEBAPP_URL else [2]
-        builder.adjust(*([1] * custom_rows + tail))
-    elif config.WEBAPP_URL:
-        rows = [1, 1, 2, 1, 2] if config.SUPPORT_URL else [1, 2, 1, 2]
-        if not config.webapp_ready():
-            rows = rows[1:]
-        builder.adjust(*rows)
-    else:
-        builder.adjust(1, 2)
+    builder.button(text="← Назад", callback_data="m:home")
+    rows.append(1)
+
+    builder.adjust(*rows)
     return builder.as_markup()
 
 

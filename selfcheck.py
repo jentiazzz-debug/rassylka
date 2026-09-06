@@ -1056,13 +1056,10 @@ async def check_custom_menu() -> None:
     check("мусорная схема отбрасывается", "Мусор" not in labels, str(labels))
     check("кнопка без подписи отбрасывается", "" not in labels, str(labels))
 
-    # Обязательные кнопки остаются даже поверх своих: их требует банк.
-    urls = {b.url for b in buttons if b.url}
-    for path in ("/terms", "/privacy", "/support"):
-        check(f"документ {path} остаётся при своих кнопках",
-              f"https://example.com{path}" in urls, str(sorted(urls)))
-    check("тарифы остаются",
-          any(b.callback_data == "m:tariffs" for b in buttons))
+    # Кнопка документов остаётся даже поверх своих: её требует банк, и
+    # убрать её владелец не может.
+    check("документы остаются при своих кнопках",
+          any(b.callback_data == "m:docs" for b in buttons), str(labels))
 
     # Без своих кнопок — обычное меню.
     plain = [b.text for row in keyboards.main_menu().inline_keyboard for b in row]
@@ -1262,7 +1259,7 @@ async def check_tariffs_message() -> None:
 
     # Кнопка «Тарифы» должна открывать сообщение, а не уводить на сайт:
     # цены смотрят перед оплатой, и уходить за ними из Telegram незачем.
-    buttons = [b for row in keyboards.main_menu().inline_keyboard for b in row]
+    buttons = [b for row in keyboards.docs_menu().inline_keyboard for b in row]
     tariff_buttons = [b for b in buttons if "Тариф" in b.text]
     check("кнопка тарифов есть", len(tariff_buttons) == 1, str(len(tariff_buttons)))
     check("она открывает сообщение, а не ссылку",
@@ -1273,7 +1270,7 @@ async def check_tariffs_message() -> None:
     # Страница при этом никуда не делась: банку нужен адрес, который
     # открывается без Telegram.
     urls = {b.url for b in buttons if b.url}
-    check("страница тарифов доступна из документов",
+    check("страница поддержки рядом",
           "https://example.com/support" in urls, str(sorted(urls)))
     check("ссылка на страницу есть в самом сообщении",
           "/tariffs" in message)
@@ -1310,30 +1307,46 @@ async def check_tariffs_message() -> None:
 
 
 async def check_menu_buttons() -> None:
-    print("\nКнопки документов в боте")
+    print("\nМеню бота и документы")
     config.WEBAPP_URL = "https://example.com"
     config.SUPPORT_URL = "https://t.me/support"
 
-    buttons = [b for row in keyboards.main_menu().inline_keyboard for b in row]
-    urls = {b.url for b in buttons if b.url}
+    top = [b for row in keyboards.main_menu().inline_keyboard for b in row]
+    labels = [b.text for b in top]
 
-    # Документы должны быть отдельными кнопками, а не за командой:
-    # проверяющий из банка не станет искать /terms в списке команд.
-    # Тарифов здесь нет намеренно — они открываются сообщением в чате,
-    # это проверяется в check_tariffs_message.
+    # В главном меню документы свёрнуты в одну кнопку: пять служебных
+    # кнопок подряд топили «Открыть приложение».
+    check("меню короткое", len(top) <= 3, str(labels))
+    check("приложение в меню", any(b.web_app for b in top), str(labels))
+    check("поддержка в меню",
+          any(b.url == "https://t.me/support" for b in top), str(labels))
+    check("кнопка документов в меню",
+          any(b.callback_data == "m:docs" for b in top), str(labels))
+    check("поддержка и документы в одном ряду",
+          len(keyboards.main_menu().inline_keyboard[-1]) == 2,
+          str([[b.text for b in r] for r in keyboards.main_menu().inline_keyboard]))
+
+    # Всё, что требовал банк, лежит под этой кнопкой — в один тап.
+    docs = [b for row in keyboards.docs_menu().inline_keyboard for b in row]
+    urls = {b.url for b in docs if b.url}
     for path in ("/terms", "/privacy", "/support"):
-        check(f"кнопка на {path} есть",
+        check(f"под кнопкой есть {path}",
               f"https://example.com{path}" in urls, str(sorted(urls)))
-    check("кнопка приложения на месте",
-          any(b.web_app for b in buttons))
-    check("кнопка поддержки на месте", "https://t.me/support" in urls)
+    check("под кнопкой есть тарифы",
+          any(b.callback_data == "m:tariffs" for b in docs))
+    check("под кнопкой есть справка",
+          any(b.callback_data == "m:help" for b in docs))
+    check("и возврат в меню",
+          any(b.callback_data == "m:home" for b in docs))
 
-    # Без адреса приложения кнопок документов быть не может — вести
+    # Без адреса приложения ссылок на документы быть не может — вести
     # некуда, и битая кнопка хуже отсутствующей.
     config.WEBAPP_URL = ""
-    plain = [b for row in keyboards.main_menu().inline_keyboard for b in row]
-    check("без WEBAPP_URL кнопок документов нет",
+    plain = [b for row in keyboards.docs_menu().inline_keyboard for b in row]
+    check("без WEBAPP_URL ссылок на документы нет",
           not any((b.url or "").endswith("/terms") for b in plain))
+    check("но тарифы остаются",
+          any(b.callback_data == "m:tariffs" for b in plain))
     config.WEBAPP_URL = "https://example.com"
 
 
