@@ -1,11 +1,17 @@
-/* Оформление мини-аппа: матовое стекло в бело-серых тонах.
+/* Оформление мини-аппа: фирменное чёрно-белое стекло.
  *
  * Тема своя, а не из клиента. Обычно мини-апп подхватывает --tg-theme-*
  * и живёт в цветах Telegram, но здесь нужен один определённый вид у
- * всех — поэтому цвета заданы явно, включая фон и цвет текста: без них
- * тёмная тема просвечивала бы сквозь полупрозрачные панели.
+ * всех — тот же, что на обложке бота: чёрное, белое и серое, без
+ * единого цветного пятна. Поэтому цвета заданы явно, включая фон и цвет
+ * текста: без них тёмная тема просвечивала бы сквозь панели.
  *
- * Главное правило этой вёрстки — МАЛО ПОВЕРХНОСТЕЙ, КРУПНЫХ.
+ * Цвет остался ровно один — красный у ошибок. Всё остальное различается
+ * формой, весом и светлотой: чёрная плашка против серой, жирная подпись
+ * против обычной. Цветом красить состояния в такой палитре нечем, и это
+ * к лучшему — экран перестал пестрить.
+ *
+ * Главное правило вёрстки — МАЛО ПОВЕРХНОСТЕЙ, КРУПНЫХ.
  *
  * Первая версия была собрана наоборот: каждая строчка — своя карточка со
  * своей рамкой, тенью и бликом. Полтора десятка таких блоков подряд
@@ -15,34 +21,41 @@
  * прокрутку.
  *
  * Поэтому здесь: раздел = одна панель, строки внутри разделены волосяной
- * линией, рамка и тень — только у панели. Панелей на экране пять, и на
- * пять размытий никакого запаса не жалко.
+ * линией, рамка и тень — только у панели.
  *
  * Чтобы стекло было видно, под ним нужно что-то неоднородное: по ровной
- * заливке размывать нечего. Отсюда крупные световые пятна на фоне —
- * они и создают то самое преломление на кромке.
+ * заливке размывать нечего. Отсюда тёмные пятна по углам — те же, что
+ * на обложке, только куда слабее. На обложке они сплошь чёрные, и
+ * буквально повторить это нельзя: обложку разглядывают, а приложением
+ * пользуются. Под чёрным углом пропадал не только текст на панели, но и
+ * то, что лежит прямо на фоне — имя, подписи разделов, чёрные кнопки.
+ * Поэтому здесь графитовая тень по углам вместо чёрных пятен, а сам
+ * чёрный остался там, где он и должен быть: в логотипе, кнопках,
+ * плашках состояний.
  */
 
 :root {
-  --ink: #0e1830;
-  --ink-2: #4a5a7a;
-  --ink-3: #8496b5;
+  --ink: #0d0e11;
+  --ink-2: #55585f;
+  --ink-3: #8b8f97;
 
-  /* Стекло. Заливка намеренно жидкая: панель должна пропускать фон,
-     иначе это просто белый прямоугольник. */
-  --glass: rgba(255, 255, 255, .38);
-  --glass-edge: rgba(255, 255, 255, .7);
-  --hairline: rgba(20, 60, 130, .09);
+  /* Стекло. Плотнее, чем хочется «по красоте»: под панель заезжают
+     чёрные пятна фона, и на жидкой заливке текст по ним поплыл бы. */
+  --glass: rgba(255, 255, 255, .64);
+  --glass-edge: rgba(255, 255, 255, .86);
+  --hairline: rgba(13, 14, 17, .09);
 
-  --accent: #0b62e4;
-  --accent-2: #2f9bff;
-  --accent-soft: rgba(11, 98, 228, .07);
-  --danger: #c8372d;
-  --ok: #1f7a4d;
-  --warn: #9a6412;
+  /* Акцент — тот же чёрный, что в логотипе. Второй тон нужен только
+     градиентам: у плоской заливки чёрным нет объёма. */
+  --accent: #0d0e11;
+  --accent-2: #35383f;
+  --accent-soft: rgba(13, 14, 17, .055);
+  --danger: #b3261e;
+  --ok: #0d0e11;
+  --warn: #55585f;
 
-  --shadow: 0 20px 48px rgba(20, 60, 130, .14), 0 2px 8px rgba(20, 60, 130, .06);
-  --blur: saturate(200%) blur(30px);
+  --shadow: 0 20px 48px rgba(13, 14, 17, .13), 0 2px 8px rgba(13, 14, 17, .06);
+  --blur: saturate(150%) blur(26px);
 
   --radius: 22px;
   --radius-s: 14px;
@@ -50,7 +63,7 @@
 
 * { box-sizing: border-box; }
 
-html { background: #dbe8fb; }
+html { background: #edeef1; }
 
 body {
   margin: 0;
@@ -59,18 +72,51 @@ body {
         Roboto, "Helvetica Neue", sans-serif;
   letter-spacing: -.01em;
   -webkit-font-smoothing: antialiased;
-  background: #dbe8fb;
+  /* Фон рисуют закреплённые слои ниже, а не body. Своя заливка у body
+     тут не «на всякий случай», а прямая поломка: когда фон задан и у
+     html, заливка body перестаёт уходить на канву и красится обычным
+     фоном элемента — поверх собственных псевдоэлементов с z-index: -1.
+     Ровно так и пропали все градиенты в прошлой версии: слои были на
+     месте, но body закрашивал их сплошным цветом. */
+  background: transparent;
   min-height: 100vh;
   padding-bottom: env(safe-area-inset-bottom, 0);
 }
 
-/* Свет под стеклом. Пятна крупные и с заметной разницей по светлоте:
-   по ровной заливке размывать нечего, и панель выглядела бы серой
-   бумагой, а не стеклом.
+/* Фон — обложка бота, разложенная на два закреплённых слоя.
+   Закреплённых слоями, а не background-attachment: fixed — тот в WebView
+   известен рывками и пустыми кадрами при прокрутке. */
 
-   Отдельным закреплённым слоем, а не background-attachment: fixed —
-   тот в WebView известен рывками и пустыми кадрами при прокрутке. */
-body::before,
+/* Нижний слой: светлая подложка и чёрные пятна по углам. Центры пятен
+   вынесены за экран: внутри кадра остаётся мягкая тёмная кромка, а не
+   чёрный круг посреди панели. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -25%;
+  z-index: -1;
+  pointer-events: none;
+  will-change: transform;
+  /* Проценты здесь — от слоя, а не от экрана, и это легко проглядеть:
+     слой растянут на 150% (inset: -25%), поэтому левый край экрана
+     приходится на 17% слоя, а правый — на 83%. Проценты «как на
+     макете» унесли бы все пятна за кадр, и фон остался бы пустым. */
+  background:
+    radial-gradient(380px 340px at 17% 17%,
+      rgba(11, 12, 15, .30) 0%, rgba(11, 12, 15, .13) 42%, rgba(11, 12, 15, 0) 72%),
+    radial-gradient(420px 380px at 83% 83%,
+      rgba(11, 12, 15, .27) 0%, rgba(11, 12, 15, .11) 44%, rgba(11, 12, 15, 0) 74%),
+    radial-gradient(380px 340px at 75% 26%,
+      rgba(120, 125, 136, .38) 0%, rgba(120, 125, 136, 0) 70%),
+    radial-gradient(420px 380px at 26% 63%,
+      rgba(255, 255, 255, .95) 0%, rgba(255, 255, 255, 0) 66%),
+    linear-gradient(168deg, #fcfcfd 0%, #f0f1f4 44%, #e4e6ea 100%);
+  animation: drift-a 30s ease-in-out infinite alternate;
+}
+
+/* Верхний слой — блик и косая линия с обложки. Медленное движение в
+   противофазе с нижним непрерывно меняет картинку под стеклом, и блики
+   на кромках панелей живут вместе с ней. */
 body::after {
   content: "";
   position: fixed;
@@ -78,49 +124,71 @@ body::after {
   z-index: -1;
   pointer-events: none;
   will-change: transform;
-}
-
-/* Нижний слой: голубые и белые пятна. Мелкие и контрастные намеренно —
-   крупные и мягкие размытие в 30 пикселей усредняет в ровную заливку, и
-   под панелью во всю ширину от них не остаётся ничего. */
-body::before {
   background:
-    radial-gradient(300px 260px at 18% 12%, #ffffff 0%, rgba(255,255,255,0) 70%),
-    radial-gradient(280px 240px at 82% 8%, #7db6ff 0%, rgba(125,182,255,0) 72%),
-    radial-gradient(340px 280px at 26% 40%, #a9d0ff 0%, rgba(169,208,255,0) 70%),
-    radial-gradient(300px 250px at 88% 52%, #ffffff 0%, rgba(255,255,255,0) 68%),
-    radial-gradient(320px 270px at 34% 74%, #ffffff 0%, rgba(255,255,255,0) 68%),
-    radial-gradient(340px 290px at 80% 88%, #6fa8f5 0%, rgba(111,168,245,0) 70%),
-    linear-gradient(165deg, #f2f8ff 0%, #d9e8fb 48%, #bcd7f7 100%);
-  animation: drift-a 26s ease-in-out infinite alternate;
-}
-
-/* Верхний слой — перелив. Он и даёт то самое «переливается»: два
-   медленных движения в противофазе непрерывно меняют картинку под
-   стеклом, и блики на кромках панелей живут вместе с ней. */
-body::after {
-  background:
-    radial-gradient(420px 340px at 70% 20%, rgba(90, 160, 255, .5) 0%, rgba(90,160,255,0) 68%),
-    radial-gradient(380px 320px at 20% 60%, rgba(255, 255, 255, .65) 0%, rgba(255,255,255,0) 66%),
-    radial-gradient(460px 380px at 60% 92%, rgba(140, 200, 255, .45) 0%, rgba(140,200,255,0) 70%);
-  animation: drift-b 34s ease-in-out infinite alternate;
+    linear-gradient(104deg,
+      rgba(255, 255, 255, 0) 47.9%, rgba(255, 255, 255, .5) 48.15%,
+      rgba(255, 255, 255, .5) 48.3%, rgba(255, 255, 255, 0) 48.55%),
+    radial-gradient(440px 360px at 61% 33%,
+      rgba(255, 255, 255, .5) 0%, rgba(255, 255, 255, 0) 68%),
+    radial-gradient(460px 380px at 33% 76%,
+      rgba(148, 153, 163, .26) 0%, rgba(148, 153, 163, 0) 70%);
+  animation: drift-b 38s ease-in-out infinite alternate;
 }
 
 @keyframes drift-a {
-  from { transform: translate3d(-3%, -2%, 0) scale(1.05); }
-  to   { transform: translate3d(3%, 3%, 0) scale(1.14); }
+  from { transform: translate3d(-2%, -2%, 0) scale(1.04); }
+  to   { transform: translate3d(2%, 2%, 0) scale(1.12); }
 }
 
 @keyframes drift-b {
-  from { transform: translate3d(4%, 2%, 0) scale(1.12) rotate(0deg); }
-  to   { transform: translate3d(-4%, -3%, 0) scale(1.02) rotate(6deg); }
+  from { transform: translate3d(3%, 2%, 0) scale(1.1) rotate(0deg); }
+  to   { transform: translate3d(-3%, -2%, 0) scale(1.02) rotate(4deg); }
 }
+
+/* Точечная сетка — та же, что по углам обложки. Чистое украшение,
+   поэтому и живёт в пустых span, а не в разметке разделов. */
+.dots {
+  position: fixed;
+  z-index: -1;
+  width: 62px;
+  height: 62px;
+  pointer-events: none;
+  background-image: radial-gradient(circle, currentColor 1.4px, transparent 1.5px);
+  background-size: 15px 15px;
+  color: rgba(13, 14, 17, .3);
+}
+.dots-a { top: 18px; right: 16px; }
+.dots-b { bottom: 96px; left: 16px; }
 
 /* Движущийся фон под полупрозрачными панелями — это непрерывная
    перерисовка. Тем, кто выключил анимации в системе, она не нужна, и
    на слабых устройствах тоже: там фон просто стоит. */
 @media (prefers-reduced-motion: reduce) {
   body::before, body::after { animation: none; }
+}
+
+/* --- шапка с логотипом --- */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 2px 4px 12px;
+}
+.brand-mark { width: 34px; height: 34px; flex: none; color: var(--ink); }
+.brand-name {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -.035em;
+  line-height: 1;
+}
+.brand-sub {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-top: 4px;
 }
 
 #app { padding: 20px 16px 28px; max-width: 560px; margin: 0 auto; }
@@ -133,9 +201,9 @@ body::after {
 /* --- типографика --- */
 
 .section-title {
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: .06em;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .09em;
   text-transform: uppercase;
   color: var(--ink-3);
   margin: 16px 0 0 4px;
@@ -158,9 +226,9 @@ body::after {
 
 .label {
   display: block;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: .06em;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .09em;
   text-transform: uppercase;
   color: var(--ink-3);
   margin: 14px 0 -2px 4px;
@@ -204,15 +272,15 @@ body::after {
   border-radius: var(--radius);
   box-shadow:
     var(--shadow),
-    inset 0 1px 0 rgba(255, 255, 255, .9),
-    inset 0 -1px 0 rgba(20, 26, 44, .05);
+    inset 0 1px 0 rgba(255, 255, 255, .95),
+    inset 0 -1px 0 rgba(13, 14, 17, .05);
   overflow: hidden;
 }
 
 /* Где backdrop-filter не поддерживается, жидкая заливка превращается в
    мутное пятно — делаем её плотной. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .panel, #tabbar { background: rgba(255, 255, 255, .92); }
+  .panel, #tabbar { background: rgba(255, 255, 255, .94); }
 }
 
 /* Строка внутри панели. Разделены волосяной линией, а не промежутком:
@@ -231,7 +299,7 @@ body::after {
 }
 .row + .row, .row-sep { border-top: 1px solid var(--hairline); }
 button.row { cursor: pointer; }
-button.row:active { background: rgba(18, 20, 26, .04); }
+button.row:active { background: rgba(13, 14, 17, .04); }
 button.row:disabled { opacity: .5; cursor: default; }
 
 .row-body { flex: 1; min-width: 0; }
@@ -263,7 +331,7 @@ button.row:disabled { opacity: .5; cursor: default; }
   border-radius: 50%;
   flex: none;
   object-fit: cover;
-  box-shadow: 0 8px 20px rgba(20, 26, 44, .18);
+  box-shadow: 0 8px 20px rgba(13, 14, 17, .2);
 }
 .me-letter {
   display: flex;
@@ -277,8 +345,8 @@ button.row:disabled { opacity: .5; cursor: default; }
 .me-body { min-width: 0; }
 .me-name {
   font-size: 19px;
-  font-weight: 650;
-  letter-spacing: -.025em;
+  font-weight: 750;
+  letter-spacing: -.03em;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -300,7 +368,7 @@ button.row:disabled { opacity: .5; cursor: default; }
 .coins-row .ic { width: 26px; height: 26px; color: var(--ink-2); }
 .coins-value {
   font-size: 40px;
-  font-weight: 700;
+  font-weight: 800;
   line-height: 1;
   letter-spacing: -.04em;
 }
@@ -344,7 +412,7 @@ button.row:disabled { opacity: .5; cursor: default; }
   cursor: pointer;
   transition: background .16s ease;
 }
-.pack:active { background: rgba(18, 20, 26, .05); }
+.pack:active { background: rgba(13, 14, 17, .05); }
 .pack.picked { background: rgba(255, 255, 255, .55); }
 .pack.picked::after {
   content: "";
@@ -355,7 +423,7 @@ button.row:disabled { opacity: .5; cursor: default; }
   pointer-events: none;
 }
 
-.pack-count { font-size: 26px; font-weight: 700; letter-spacing: -.035em; line-height: 1.1; }
+.pack-count { font-size: 26px; font-weight: 800; letter-spacing: -.04em; line-height: 1.1; }
 .pack-label { font-size: 11.5px; color: var(--ink-3); }
 .pack-price {
   display: flex;
@@ -381,10 +449,10 @@ button.row:disabled { opacity: .5; cursor: default; }
   letter-spacing: .04em;
   text-transform: uppercase;
   white-space: nowrap;
-  color: var(--ok);
-  background: rgba(31, 122, 77, .13);
+  color: var(--ink-2);
+  background: rgba(13, 14, 17, .08);
 }
-.tag.hot { color: var(--ink); background: rgba(18, 20, 26, .09); left: 8px; right: auto; }
+.tag.hot { color: #fff; background: var(--ink); left: 8px; right: auto; }
 
 .pay-row { justify-content: space-between; }
 .pay-total {
@@ -422,24 +490,27 @@ button.row:disabled { opacity: .5; cursor: default; }
 .btn.primary {
   background: linear-gradient(178deg, var(--accent-2) 0%, var(--accent) 100%);
   color: #fff;
-  box-shadow: 0 10px 26px rgba(11, 98, 228, .34),
-              inset 0 1px 0 rgba(255, 255, 255, .3);
+  box-shadow: 0 10px 26px rgba(13, 14, 17, .28),
+              inset 0 1px 0 rgba(255, 255, 255, .18);
 }
 
-/* Единственное цветное пятно на экране. Звёзды у Telegram жёлтые, и
-   человек ищет глазами именно этот цвет. */
+/* Кнопка оплаты звёздами раньше была жёлтой — единственным цветным
+   пятном на экране. В чёрно-белой палитре жёлтое пятно выглядит
+   случайным, а выделять его больше не нужно: способ оплаты человек
+   выбирает экраном раньше, и на самом экране оплаты эта кнопка и так
+   одна. Отличается она теперь значком звезды, а не цветом. */
 .btn.stars {
-  background: linear-gradient(178deg, #ffb42e 0%, #f59204 100%);
-  color: #2a1c00;
-  box-shadow: 0 10px 24px rgba(232, 145, 7, .28),
-              inset 0 1px 0 rgba(255, 255, 255, .4);
+  background: linear-gradient(178deg, var(--accent-2) 0%, var(--accent) 100%);
+  color: #fff;
+  box-shadow: 0 10px 26px rgba(13, 14, 17, .28),
+              inset 0 1px 0 rgba(255, 255, 255, .18);
 }
 
 .btn.ghost {
   background: rgba(255, 255, 255, .5);
   border: 1px solid var(--glass-edge);
   color: var(--ink);
-  box-shadow: 0 2px 10px rgba(20, 26, 44, .05);
+  box-shadow: 0 2px 10px rgba(13, 14, 17, .05);
 }
 
 /* Мелкие кнопки в карточках.
@@ -461,7 +532,7 @@ button.row:disabled { opacity: .5; cursor: default; }
   border-radius: 10px;
 }
 .btn.small .ic { width: 15px; height: 15px; }
-.btn.small.danger { color: var(--danger); background: rgba(200, 55, 45, .08); }
+.btn.small.danger { color: var(--danger); background: rgba(13, 14, 17, .05); }
 
 /* --- поля --- */
 
@@ -477,8 +548,8 @@ button.row:disabled { opacity: .5; cursor: default; }
 .field::placeholder { color: var(--ink-3); }
 .field:focus {
   outline: none;
-  border-color: var(--accent-2);
-  box-shadow: 0 0 0 3px rgba(47, 155, 255, .18);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(13, 14, 17, .1);
 }
 .field.code { letter-spacing: .38em; text-align: center; font-size: 21px; font-weight: 600; }
 .area { resize: vertical; min-height: 104px; font-family: inherit; }
@@ -522,7 +593,7 @@ input[type="file"].field::file-selector-button {
   background: #fff;
   color: var(--ink);
   font-weight: 600;
-  box-shadow: 0 2px 8px rgba(20, 26, 44, .08);
+  box-shadow: 0 2px 8px rgba(13, 14, 17, .08);
 }
 
 /* --- шаги мастера --- */
@@ -552,7 +623,7 @@ input[type="file"].field::file-selector-button {
   width: 19px;
   height: 19px;
   border-radius: 50%;
-  background: rgba(18, 20, 26, .1);
+  background: rgba(13, 14, 17, .1);
   font-size: 11px;
   font-weight: 700;
 }
@@ -561,7 +632,7 @@ input[type="file"].field::file-selector-button {
   border-color: var(--glass-edge);
   color: var(--ink);
   font-weight: 600;
-  box-shadow: 0 4px 14px rgba(20, 26, 44, .09);
+  box-shadow: 0 4px 14px rgba(13, 14, 17, .09);
 }
 .step.active b { background: var(--accent); color: #fff; }
 .step.done b { background: var(--ok); color: #fff; }
@@ -584,7 +655,7 @@ input[type="file"].field::file-selector-button {
   font: inherit;
   resize: vertical;
 }
-.variant textarea:focus { outline: none; border-color: rgba(18, 20, 26, .3); }
+.variant textarea:focus { outline: none; border-color: rgba(13, 14, 17, .35); }
 .variant-drop {
   flex: none;
   width: 32px;
@@ -598,7 +669,7 @@ input[type="file"].field::file-selector-button {
   color: var(--ink-3);
   cursor: pointer;
 }
-.variant-drop:active { background: rgba(200, 55, 45, .1); color: var(--danger); }
+.variant-drop:active { background: rgba(179, 38, 30, .09); color: var(--danger); }
 
 .chips { display: flex; flex-wrap: wrap; gap: 7px; }
 .chip {
@@ -647,13 +718,13 @@ input[type="file"].field::file-selector-button {
   font-weight: 600;
   padding: 3px 9px;
   border-radius: 999px;
-  background: rgba(31, 122, 77, .12);
-  color: var(--ok);
+  background: var(--ink);
+  color: #fff;
   white-space: nowrap;
 }
 .badge .ic { width: 12px; height: 12px; stroke-width: 2.2; }
-.badge.dead, .badge.stopped { background: rgba(200, 55, 45, .11); color: var(--danger); }
-.badge.paused { background: rgba(154, 100, 18, .12); color: var(--warn); }
+.badge.dead, .badge.stopped { background: rgba(179, 38, 30, .1); color: var(--danger); }
+.badge.paused { background: rgba(13, 14, 17, .08); color: var(--ink-2); }
 
 .campaign-text {
   color: var(--ink-2);
@@ -683,7 +754,7 @@ input[type="file"].field::file-selector-button {
   cursor: pointer;
 }
 .pick + .pick { border-top: 1px solid var(--hairline); }
-.pick:active { background: rgba(18, 20, 26, .04); }
+.pick:active { background: rgba(13, 14, 17, .04); }
 .pick input { width: 19px; height: 19px; flex: none; accent-color: var(--accent); }
 .pick-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pick-kind { font-size: 12px; color: var(--ink-3); flex: none; }
@@ -739,8 +810,8 @@ input[type="file"].field::file-selector-button {
   -webkit-backdrop-filter: saturate(200%) blur(30px);
   backdrop-filter: saturate(200%) blur(30px);
   border: 1px solid var(--glass-edge);
-  box-shadow: 0 14px 38px rgba(20, 26, 44, .16),
-              inset 0 1px 0 rgba(255, 255, 255, .8);
+  box-shadow: 0 14px 38px rgba(13, 14, 17, .18),
+              inset 0 1px 0 rgba(255, 255, 255, .9);
   max-width: 536px;
   margin: 0 auto;
   z-index: 10;
@@ -772,7 +843,7 @@ body.with-tabs #app { padding-bottom: 104px; }
   width: 26px;
   height: 26px;
   margin: 46px auto 0;
-  border: 2.5px solid rgba(18, 20, 26, .1);
+  border: 2.5px solid rgba(13, 14, 17, .12);
   border-top-color: var(--ink);
   border-radius: 50%;
   animation: spin 1s linear infinite;
@@ -791,7 +862,7 @@ body.with-tabs #app { padding-bottom: 104px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(31, 122, 77, .12);
-  color: var(--ok);
+  background: var(--ink);
+  color: #fff;
 }
 .done-mark .ic { width: 30px; height: 30px; stroke-width: 2.2; }
