@@ -2,21 +2,24 @@
 
 Что здесь можно, и почему сделано именно так.
 
-**Приветствие** бывает двух видов, и выбор между ними — это выбор
-между медиа и переменными; всё остальное умеют оба.
+**Приветствие.** Владелец присылает боту что угодно — текст, фото,
+гифку, видео, кружок, стикер, — и это становится тем, что люди видят по
+`/start`. Переменные (`{name}`, `{balance}`) и оформление работают в
+обоих случаях, а вот путь до человека у них разный.
 
-*Своё сообщение.* Владелец присылает боту что угодно — текст, фото,
-гифку, видео, кружок, стикер, — и на `/start` бот копирует это через
-`copy_message`. Мы **не разбираем** сообщение на части: разбор и
-пересборка теряют половину оформления, а копирование переносит его
-целиком и ничего не скачивает — файл уже лежит у Telegram. Обратных
-сторон две: исходное сообщение **нельзя удалять** из чата с ботом
-(копировать станет нечего — бот это заметит и вернётся к обычному
-приветствию), и копия одинакова для всех, подставить в неё имя нельзя.
+*Текст* храним разобранным — самим текстом и сущностями разметки.
+Только так в него можно подставить имя каждого читателя.
 
-*Текст с переменными.* Хранится текстом и сущностями, поэтому в нём
-работают `{name}`, `{balance}`, `{days}` и остальные — вместе с жирным,
-цитатой, ссылками и премиум-эмодзи. Медиа в нём нет.
+*Медиа* **не разбираем**: разбор и пересборка теряют половину
+оформления, а `copy_message` переносит сообщение целиком и ничего не
+скачивает — файл уже лежит у Telegram. Переменные при этом всё равно
+работают, потому что при копировании подпись можно **заменить**: медиа
+уходит копией, подпись — подставленной. Обратная сторона одна: исходное
+сообщение нельзя удалять из чата с ботом (копировать станет нечего —
+бот это заметит и вернётся к обычному приветствию).
+
+У стикера и кружка подписи не бывает вовсе, и подставлять там некуда —
+об этом бот честно говорит при сохранении.
 
 **Кнопки.** Списком строк «Текст | куда | эмодзи | цвет». «Куда» —
 ссылка или короткое слово: app, tariffs, help, support. Два последних
@@ -61,6 +64,8 @@ router = Router(name="admin")
 KEYS = (
     "menu_chat_id",
     "menu_msg_id",
+    "menu_caption",
+    "menu_caption_entities",
     "menu_text",
     "menu_entities",
     "menu_buttons",
@@ -71,7 +76,6 @@ KEYS = (
 
 class Setup(StatesGroup):
     greeting = State()
-    greeting_text = State()
     buttons = State()
     banner = State()
 
@@ -109,9 +113,11 @@ def panel() -> InlineKeyboardBuilder:
 async def _state_text() -> str:
     saved = await db.settings_all()
     if saved.get("menu_text"):
-        greeting = "текст с переменными"
+        greeting = "свой текст"
     elif saved.get("menu_msg_id"):
-        greeting = "своё сообщение"
+        greeting = "своё медиа" + (
+            " с подписью" if saved.get("menu_caption") else " без подписи"
+        )
     else:
         greeting = "по умолчанию"
     buttons = saved.get("menu_buttons")
@@ -152,21 +158,24 @@ def _cancel() -> InlineKeyboardBuilder:
 
 @router.callback_query(F.data == "a:greeting")
 async def ask_greeting(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
+    await state.set_state(Setup.greeting)
     builder = InlineKeyboardBuilder()
-    builder.button(text="📎 Своё сообщение", callback_data="a:g:media")
-    builder.button(text="🔤 Текст с переменными", callback_data="a:g:text")
     builder.button(text="♻️ Вернуть обычное", callback_data="a:g:off")
-    builder.button(text="← Назад", callback_data="a:home")
-    builder.adjust(2, 1, 1)
+    builder.button(text="← Отмена", callback_data="a:home")
+    builder.adjust(1, 1)
     await callback.message.edit_text(
         "✏️ <b>Приветствие бота</b>\n\n"
-        "<b>📎 Своё сообщение</b> — пришлёте что угодно, бот скопирует это "
-        "людям как есть: фото, гифка, видео, кружок, стикер, премиум-эмодзи, "
-        "разметка. Одинаковое для всех — подставить имя в копию нельзя.\n\n"
-        "<b>🔤 Текст с переменными</b> — то же оформление (жирный, цитата, "
-        "ссылки, премиум-эмодзи), но с обращением по имени и балансом. "
-        "Без медиа.",
+        "Пришлите следующим сообщением то, что должны видеть люди по "
+        "/start. Подойдёт что угодно: текст, фото, гифка, видео, кружок, "
+        "стикер — с премиум-эмодзи, жирным, цитатами и ссылками.\n\n"
+        "<b>Переменные работают и в тексте, и в подписи к медиа:</b>\n"
+        + richtext.help_text()
+        + "\n\nНапример подписью к картинке:\n"
+        "<code>Привет, {name}!\nНа счету {balance} "
+        + config.COIN_NAME
+        + ", подписка: {tariff}.</code>\n\n"
+        "⚠️ Если пришлёте медиа — не удаляйте это сообщение из нашего "
+        "чата: бот его копирует, и копировать станет нечего.",
         reply_markup=builder.as_markup(),
     )
     await callback.answer()
@@ -175,7 +184,7 @@ async def ask_greeting(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "a:g:off")
 async def greeting_off(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    for key in ("menu_chat_id", "menu_msg_id", "menu_text", "menu_entities"):
+    for key in _GREETING_KEYS:
         await db.set_setting(key, None)
     await callback.message.edit_text(
         "♻️ Вернул обычное приветствие.\n\n" + await _state_text(),
@@ -184,69 +193,47 @@ async def greeting_off(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "a:g:media")
-async def ask_greeting_media(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(Setup.greeting)
-    await callback.message.edit_text(
-        "📎 <b>Своё сообщение</b>\n\n"
-        "Пришлите следующим сообщением то, что должны видеть люди по "
-        "/start. Подойдёт что угодно: текст, фото, гифка, видео, кружок, "
-        "стикер — с премиум-эмодзи, жирным, ссылками и цитатами.\n\n"
-        "Сообщение уйдёт людям <b>ровно в том виде</b>, в котором вы его "
-        "пришлёте: бот его копирует, а не пересобирает.\n\n"
-        "⚠️ Не удаляйте это сообщение из нашего чата — копировать будет "
-        "нечего, и бот вернётся к обычному приветствию.",
-        reply_markup=_cancel().as_markup(),
-    )
-    await callback.answer()
+#: Всё, что задаёт приветствие. Задавая новое, стираем остальное: две
+#: половины от разных приветствий вместе дали бы не то, что владелец
+#: только что видел в предпросмотре.
+_GREETING_KEYS = (
+    "menu_chat_id",
+    "menu_msg_id",
+    "menu_caption",
+    "menu_caption_entities",
+    "menu_text",
+    "menu_entities",
+)
 
 
 @router.message(Setup.greeting)
 async def save_greeting(message: Message, state: FSMContext) -> None:
-    await db.set_setting("menu_chat_id", str(message.chat.id))
-    await db.set_setting("menu_msg_id", str(message.message_id))
-    # Режимы взаимно исключают друг друга: send_start смотрит текст
-    # первым, и оставленный текст перекрыл бы только что заданное медиа.
-    await db.set_setting("menu_text", None)
-    await db.set_setting("menu_entities", None)
+    for key in _GREETING_KEYS:
+        await db.set_setting(key, None)
+
+    if message.text:
+        # Текст храним разобранным: только так в него можно подставить
+        # имя каждого читателя.
+        await db.set_setting("menu_text", message.text)
+        await db.set_setting("menu_entities", richtext.dump(message.entities))
+        source = message.text
+    else:
+        # Медиа копируем — целиком, ничего не скачивая. А подпись при
+        # копировании можно подменить, поэтому переменные работают и тут.
+        await db.set_setting("menu_chat_id", str(message.chat.id))
+        await db.set_setting("menu_msg_id", str(message.message_id))
+        if message.caption:
+            await db.set_setting("menu_caption", message.caption)
+            await db.set_setting(
+                "menu_caption_entities", richtext.dump(message.caption_entities)
+            )
+        source = message.caption or ""
+
     await state.clear()
     log.info("приветствие обновлено владельцем %s", message.from_user.id)
-    await message.answer(
-        "✅ Приветствие сохранено. Вот как его увидят люди:",
-        reply_markup=_cancel().as_markup(),
-    )
-    await preview_start(message.bot, message.chat.id)
 
-
-@router.callback_query(F.data == "a:g:text")
-async def ask_greeting_text(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(Setup.greeting_text)
-    await callback.message.edit_text(
-        "🔤 <b>Текст с переменными</b>\n\n"
-        "Пришлите текст приветствия — с премиум-эмодзи, жирным, курсивом, "
-        "цитатой, спойлером и ссылками: всё оформление сохранится.\n\n"
-        + richtext.help_text()
-        + "\n\nНапример:\n"
-        "<code>Привет, {name}!\nНа счету {balance} "
-        + config.COIN_NAME
-        + ", подписка: {tariff}.</code>",
-        reply_markup=_cancel().as_markup(),
-    )
-    await callback.answer()
-
-
-@router.message(Setup.greeting_text, F.text)
-async def save_greeting_text(message: Message, state: FSMContext) -> None:
-    await db.set_setting("menu_text", message.text)
-    await db.set_setting("menu_entities", richtext.dump(message.entities))
-    # См. выше: два приветствия одновременно жить не могут.
-    await db.set_setting("menu_chat_id", None)
-    await db.set_setting("menu_msg_id", None)
-    await state.clear()
-    log.info("текстовое приветствие обновлено владельцем %s", message.from_user.id)
-
-    unknown = _unknown_variables(message.text)
-    note = "✅ Сохранено. Вот как его увидят люди:"
+    note = "✅ Приветствие сохранено. Вот как его увидят люди:"
+    unknown = _unknown_variables(source)
     if unknown:
         # Опечатка в имени переменной оставляет в приветствии фигурные
         # скобки — человек увидит их как есть.
@@ -256,17 +243,14 @@ async def save_greeting_text(message: Message, state: FSMContext) -> None:
             + " я не знаю — они останутся в тексте как есть.\n\n"
             "Вот как его увидят люди:"
         )
+    elif not message.text and not message.caption:
+        note = (
+            "✅ Приветствие сохранено. Переменных в нём нет: у этого вида "
+            "сообщений не бывает подписи, подставлять имя некуда.\n\n"
+            "Вот как его увидят люди:"
+        )
     await message.answer(note, reply_markup=_cancel().as_markup())
     await preview_start(message.bot, message.chat.id)
-
-
-@router.message(Setup.greeting_text)
-async def greeting_text_not_text(message: Message) -> None:
-    await message.answer(
-        "Здесь нужен именно текст — медиа в этом режиме не показывается. "
-        "Если нужна картинка, вернитесь и выберите «📎 Своё сообщение».",
-        reply_markup=_cancel().as_markup(),
-    )
 
 
 def _unknown_variables(text: str) -> list[str]:
@@ -413,10 +397,10 @@ async def ask_cast(callback: CallbackQuery, state: FSMContext) -> None:
         "📣 <b>Рассылка по людям</b>\n\n"
         f"Уйдёт всем, кто когда-либо запускал бота: <b>{people}</b>.\n\n"
         "Пришлите сообщение — текстом или с медиа.\n\n"
-        "В <b>тексте</b> работают переменные и оформление:\n"
+        "Переменные работают и в тексте, и в подписи к медиа:\n"
         + richtext.help_text()
-        + "\n\nВ сообщении <b>с медиа</b> переменных нет — фото и гифка "
-        "уходят копией, одинаковой для всех.",
+        + "\n\nУ стикера и кружка подписи не бывает — там подставлять "
+        "некуда, они уйдут копией.",
         reply_markup=_cancel().as_markup(),
     )
     await callback.answer()
@@ -432,14 +416,20 @@ async def cast_got_message(message: Message, state: FSMContext) -> None:
             entities=richtext.dump(message.entities),
             src_chat=None,
             src_msg=None,
+            caption=None,
+            caption_entities=None,
         )
     else:
-        # Медиа не пересобираем — копируем, как и приветствие.
+        # Медиа не пересобираем — копируем, как и приветствие. Подпись
+        # при копировании можно заменить, поэтому переменные работают и
+        # под картинкой.
         await state.update_data(
             text=None,
             entities=None,
             src_chat=message.chat.id,
             src_msg=message.message_id,
+            caption=message.caption,
+            caption_entities=richtext.dump(message.caption_entities),
         )
     await state.set_state(Cast.buttons)
     await message.answer(
@@ -504,11 +494,14 @@ async def _cast_one(bot, user_id: int, data: dict, markup, person=None) -> None:
         )
         await richtext.send(bot, user_id, text, entities, markup)
         return
-    await bot.copy_message(
-        chat_id=user_id,
-        from_chat_id=int(data["src_chat"]),
-        message_id=int(data["src_msg"]),
-        reply_markup=markup,
+
+    caption = data.get("caption")
+    await richtext.send_copy(
+        bot, user_id, int(data["src_chat"]), int(data["src_msg"]),
+        caption or None,
+        richtext.load(data.get("caption_entities")),
+        await richtext.values_for(person, db) if caption else {},
+        markup,
     )
 
 

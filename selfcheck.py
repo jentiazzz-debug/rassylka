@@ -1432,7 +1432,8 @@ async def check_variables() -> None:
     check("баланс подставляется числом", isinstance(values["balance"], int))
     check("состояние подписки словами", bool(values["tariff"]), str(values))
 
-    for key in ("menu_text", "menu_entities"):
+    for key in ("menu_text", "menu_entities",
+                "menu_caption", "menu_caption_entities"):
         check(f"ключ {key} есть в списке сброса", key in admin.KEYS)
 
     # И самое важное — что /start вообще пойдёт по этой ветке. Настройка,
@@ -1479,7 +1480,42 @@ async def check_variables() -> None:
     bot = FakeBot()
     await handlers.send_start(bot, USER, None)
     check("без текста возвращается копия", bot.copied is not None)
-    for key in ("menu_chat_id", "menu_msg_id", "menu_entities"):
+
+    # Медиа с подписью — то, ради чего подпись вообще подменяется:
+    # картинка уходит копией, а имя в подписи у каждого своё.
+    await db.set_setting("menu_caption", "Привет, {name}! Монет: {balance}")
+    await db.set_setting("menu_caption_entities", json.dumps(
+        [{"type": "bold", "offset": 0, "length": 6},
+         {"type": "italic", "offset": 16, "length": 5}]))
+    bot = FakeBot()
+    await handlers.send_start(
+        bot, USER,
+        richtext.person({"user_id": USER, "username": "test", "name": "Тест"}),
+    )
+    copied = bot.copied or {}
+    check("медиа всё ещё копируется, а не пересобирается", bool(copied))
+    check("имя подставилось в подпись к медиа",
+          "Привет, Тест!" in (copied.get("caption") or ""), str(copied))
+    check("разметка подписи доехала сущностями",
+          bool(copied.get("caption_entities")), str(copied))
+    shifted = copied["caption_entities"][1]
+    check("сущность в подписи поехала вместе с текстом",
+          copied["caption"][shifted.offset:shifted.offset + shifted.length]
+          == "Монет", str(shifted))
+    check("общий parse_mode заглушён и здесь",
+          copied.get("parse_mode") is None, str(copied))
+
+    # У стикера и кружка подписи нет — подменять нечего, и подставлять
+    # пустую строку вместо неё нельзя: Telegram сотрёт настоящую.
+    await db.set_setting("menu_caption", None)
+    await db.set_setting("menu_caption_entities", None)
+    bot = FakeBot()
+    await handlers.send_start(bot, USER, None)
+    check("без подписи копия уходит нетронутой",
+          (bot.copied or {}).get("caption") is None, str(bot.copied))
+
+    for key in ("menu_chat_id", "menu_msg_id", "menu_entities",
+                "menu_caption", "menu_caption_entities"):
         await db.set_setting(key, None)
 
 

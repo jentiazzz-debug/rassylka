@@ -1,7 +1,8 @@
 """Подстановка переменных в текст, сохраняя оформление.
 
 Задача, из-за которой этот модуль вообще есть: в приветствии нужны и
-переменные (`{name}`), и премиум-эмодзи с жирным и цитатами. Разметку
+переменные (`{name}`), и премиум-эмодзи с жирным и цитатами — и всё это
+не только в тексте, но и в подписи к фото или гифке. Разметку
 Telegram передаёт не тегами, а **сущностями** — списком «с такого-то
 символа, такой-то длины, такой-то тип». Стоит подставить в текст имя, и
 все сущности правее сдвига начинают указывать не туда: жирным окажется
@@ -187,6 +188,44 @@ def drop_custom_emoji(entities) -> list:
         if kind != "custom_emoji":
             out.append(entity)
     return out
+
+
+async def send_copy(bot, chat_id: int, from_chat_id: int, message_id: int,
+                    caption: str | None, entities, values: dict, markup=None):
+    """Скопировать медиа, подменив подпись подставленной.
+
+    Так медиа и переменные уживаются в одном сообщении. Само медиа
+    по-прежнему копия — фото, гифка и видео переносятся целиком, ничего
+    не скачивается. А подпись `copyMessage` разрешает **заменить**, и в
+    заменённую уже можно подставить имя и баланс.
+
+    Иначе пришлось бы выбирать: либо картинка, либо обращение по имени.
+    """
+    from aiogram.exceptions import TelegramBadRequest
+
+    text, shifted = (caption, list(entities or []))
+    if caption:
+        text, shifted = apply(caption, entities, values)
+
+    async def attempt(items):
+        return await bot.copy_message(
+            chat_id=chat_id,
+            from_chat_id=int(from_chat_id),
+            message_id=int(message_id),
+            # Подпись без переменных передаём как есть: подменять её той
+            # же самой незачем, а у стикера с кружком её и не бывает.
+            caption=text if caption else None,
+            caption_entities=to_entities(items) if caption else None,
+            parse_mode=None,
+            reply_markup=markup,
+        )
+
+    try:
+        return await attempt(shifted)
+    except TelegramBadRequest:
+        if not has_custom_emoji(shifted):
+            raise
+        return await attempt(drop_custom_emoji(shifted))
 
 
 async def send(bot, chat_id: int, text: str, entities, markup=None):

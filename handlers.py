@@ -117,20 +117,19 @@ async def custom_buttons() -> list[dict] | None:
 async def send_start(bot, chat_id: int, user, preview: bool = False) -> None:
     """Приветствие: своё, настроенное владельцем, либо обычное.
 
-    Своих приветствий два вида, и различаются они не оформлением, а тем,
-    можно ли в них подставлять переменные.
+    Переменные (`{name}`, `{balance}`) работают в любом своём
+    приветствии — и в тексте, и в подписи к фото. А вот путь до человека
+    у текста и медиа разный.
 
-    **Медиа-приветствие** копируется целиком через `copy_message`: так
-    доезжают фото, гифка, кружок, стикер, премиум-эмодзи и разметка.
-    Разбирать и собирать заново — значит потерять половину: у
-    премиум-эмодзи нужен доступ к их документам, у медиа свои file_id.
-    Но копия — она и есть копия: одинаковая для всех, подставить в неё
-    имя невозможно.
+    **Текст** лежит в базе разобранным — самим текстом и сущностями
+    разметки — и собирается заново на каждого читателя: только так в
+    него можно подставить имя.
 
-    **Текст с переменными** хранится текстом и сущностями, поэтому в нём
-    работают и `{name}`, и жирный с цитатой и премиум-эмодзи, — но медиа
-    в нём нет. Что из двух показывать, решает владелец в /admin; текст
-    проверяется первым, потому что владелец задаёт его последним.
+    **Медиа** копируется целиком через `copy_message`: так доезжают
+    фото, гифка, кружок, стикер, премиум-эмодзи. Разбирать и собирать
+    заново — значит потерять половину: у премиум-эмодзи нужен доступ к
+    их документам, у медиа свои file_id. Подпись при этом подставляется
+    всё равно, потому что копирование разрешает её **заменить**.
     """
     markup = keyboards.main_menu(await custom_buttons())
 
@@ -145,12 +144,14 @@ async def send_start(bot, chat_id: int, user, preview: bool = False) -> None:
     chat = await db.setting("menu_chat_id")
     msg_id = await db.setting("menu_msg_id")
     if chat and msg_id:
+        caption = await db.setting("menu_caption")
         try:
-            await bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=int(chat),
-                message_id=int(msg_id),
-                reply_markup=markup,
+            await richtext.send_copy(
+                bot, chat_id, int(chat), int(msg_id),
+                caption or None,
+                richtext.load(await db.setting("menu_caption_entities")),
+                await richtext.values_for(user, db) if caption else {},
+                markup,
             )
             return
         except Exception as error:
@@ -158,8 +159,9 @@ async def send_start(bot, chat_id: int, user, preview: bool = False) -> None:
             # Молчать нельзя: владелец будет думать, что оформление
             # работает, а люди видят обычный текст.
             log.warning("своё приветствие не скопировалось: %s", error)
-            await db.set_setting("menu_chat_id", None)
-            await db.set_setting("menu_msg_id", None)
+            for key in ("menu_chat_id", "menu_msg_id",
+                        "menu_caption", "menu_caption_entities"):
+                await db.set_setting(key, None)
             for admin_id in config.ADMIN_IDS:
                 try:
                     await bot.send_message(admin_id, texts.GREETING_LOST)
