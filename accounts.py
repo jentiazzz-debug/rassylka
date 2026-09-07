@@ -117,8 +117,11 @@ def _client(phone: str):
 
     return TelegramClient(
         StringSession(),
-        config.MTPROTO_API_ID,
-        config.MTPROTO_API_HASH,
+        # Типы приводим здесь, у самого Telethon: он кладёт api_hash в
+        # запрос как есть и на числе падает с «bytes or str expected» —
+        # ошибкой, по которой про настройки не догадаться.
+        int(config.MTPROTO_API_ID or 0),
+        str(config.MTPROTO_API_HASH or ""),
         device_model=DEVICE_MODEL,
         system_version="Windows 10",
         app_version=APP_VERSION,
@@ -266,7 +269,17 @@ async def start(user_id: int, raw_phone: str) -> Pending:
     except Exception as error:
         await client.disconnect()
         log.exception("запрос кода на %s сорвался", _mask(phone))
-        raise LoginError(f"Не удалось запросить код: {type(error).__name__}")
+        # Одного имени класса мало. За «TypeError» тут одинаково
+        # прячутся незнакомый библиотеке способ подтверждения, отказ
+        # ключей и оборванная сеть — а человек видит одно слово и идёт в
+        # поддержку, откуда без логов сервера ничего не разобрать.
+        detail = " ".join(str(error).split())[:140]
+        note = f"{type(error).__name__}: {detail}" if detail else type(error).__name__
+        raise LoginError(
+            f"Не удалось запросить код. {note}\n\n"
+            "Если повторяется — подключите аккаунт через tdata: там вход "
+            "уже сделан, и код запрашивать не нужно."
+        )
 
     await db.log_code_request(user_id, phone)
 

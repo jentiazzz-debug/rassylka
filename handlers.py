@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 
@@ -238,32 +239,45 @@ async def stats_command(message: Message) -> None:
     await message.answer(texts.stats(await db.stats()))
 
 
+async def _show(callback: CallbackQuery, text: str, markup) -> None:
+    """Показать текст на месте нажатой кнопки.
+
+    Правкой, если правится, и новым сообщением, если нет. Приветствие
+    владельца бывает фотографией или гифкой — в таком сообщении текста
+    нет вовсе, и Telegram отвечает «there is no text in the message to
+    edit». Раньше это выглядело так, будто кнопка сломана: нажимаешь, и
+    не происходит ничего.
+    """
+    try:
+        await callback.message.edit_text(
+            text, reply_markup=markup, disable_web_page_preview=True
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            text, reply_markup=markup, disable_web_page_preview=True
+        )
+
+
 @router.callback_query(F.data == "m:help")
 async def help_button(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(
-        texts.HELP, reply_markup=keyboards.docs_menu()
-    )
+    await _show(callback, texts.HELP, keyboards.docs_menu())
     await callback.answer()
 
 
 @router.callback_query(F.data == "m:docs")
 async def docs_button(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(
+    await _show(
+        callback,
         texts.documents(config.WEBAPP_URL) if config.WEBAPP_URL
         else texts.NO_WEBAPP,
-        reply_markup=keyboards.docs_menu(),
-        disable_web_page_preview=True,
+        keyboards.docs_menu(),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data == "m:tariffs")
 async def tariffs_button(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(
-        texts.tariffs(),
-        reply_markup=keyboards.docs_menu(),
-        disable_web_page_preview=True,
-    )
+    await _show(callback, texts.tariffs(), keyboards.docs_menu())
     await callback.answer()
 
 
@@ -274,9 +288,10 @@ async def home_button(callback: CallbackQuery) -> None:
     # Кнопка «назад» правит уже отправленное сообщение, поэтому здесь
     # всегда текст: превратить его в фото или гифку правкой нельзя.
     # Своё оформление увидят при следующем /start.
-    await callback.message.edit_text(
+    await _show(
+        callback,
         texts.start(user.first_name, subscription),
-        reply_markup=keyboards.main_menu(await custom_buttons()),
+        keyboards.main_menu(await custom_buttons()),
     )
     await callback.answer()
 
