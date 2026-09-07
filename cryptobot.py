@@ -43,6 +43,29 @@ def price_of(coins: int) -> float | None:
     return None
 
 
+def min_coins() -> int:
+    """Меньше этого криптой не продать: счёт на центы съест комиссия."""
+    from math import ceil
+
+    return max(config.COIN_MIN,
+               ceil(config.CRYPTO_MIN_USD * config.COINS_PER_USD))
+
+
+def price_for(coins: int) -> float | None:
+    """Цена любого количества монет. None — столько продать нельзя.
+
+    Готовая пачка идёт по своей цене: в ней заложена скидка, и считать
+    её по базовому курсу значило бы отменить скидку тому, кто ввёл то же
+    число руками.
+    """
+    exact = price_of(coins)
+    if exact is not None:
+        return exact
+    if not (min_coins() <= coins <= config.COIN_MAX):
+        return None
+    return round(coins / config.COINS_PER_USD, 2)
+
+
 async def _call(method: str, payload: dict | None = None) -> dict:
     async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
         async with session.post(
@@ -60,9 +83,9 @@ async def create(user_id: int, coins: int) -> dict:
     """Выставить счёт в USDT. Возвращает {'url': ..., 'id': ...}."""
     if not ready():
         raise RuntimeError("CryptoBot не настроен")
-    usd = price_of(coins)
+    usd = price_for(coins)
     if usd is None:
-        raise ValueError("нет такой пачки монет")
+        raise ValueError("столько монет так не продать")
 
     order_id = uuid.uuid4().hex
     result = await _call("createInvoice", {

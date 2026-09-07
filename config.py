@@ -220,6 +220,10 @@ COIN_NAME = (os.getenv("COIN_NAME") or "Slx").strip()
 #: рубли живут параллельно, и курс у них свой.
 RUB_PER_COIN = _float("RUB_PER_COIN", "2")
 
+#: Нижний порог рублёвого счёта: у эквайринга есть своя минимальная
+#: сумма, и счёт ниже неё просто не откроется на их стороне.
+RUB_MIN = _float("RUB_MIN", "10")
+
 #: Пачки монет для оплаты рублями. Формат тот же, что у звёздных:
 #: «монеты» или «монеты:цена в рублях».
 def _rub_packs(raw: str) -> list[dict]:
@@ -274,6 +278,10 @@ CRYPTO_API = (
 #: Сколько монет даёт доллар.
 COINS_PER_USD = max(1, _int("COINS_PER_USD", "50"))
 
+#: Нижний порог счёта у криптокошельков. Технически они принимают и
+#: центы, но счёт на $0.20 — это комиссия сети больше самой оплаты.
+CRYPTO_MIN_USD = _float("CRYPTO_MIN_USD", "0.5")
+
 
 def _crypto_packs(raw: str) -> list[dict]:
     """Пачки за доллары: «доллары» или «доллары:монеты»."""
@@ -295,6 +303,25 @@ def _crypto_packs(raw: str) -> list[dict]:
 
 #: По умолчанию 1, 5, 10 и 25 долларов по курсу COINS_PER_USD.
 CRYPTO_PACKS = _crypto_packs(os.getenv("CRYPTO_PACKS") or "1,5,10,25")
+
+
+# --- xRocket: второй криптокошелёк ------------------------------------
+
+#: Ключ приложения из @xRocket: xRocket Pay → Create app. Пусто — оплата
+#: через xRocket выключена, остальные способы работают как работали.
+XROCKET_TOKEN = (os.getenv("XROCKET_KEY") or "").strip()
+XROCKET_API = (
+    os.getenv("XROCKET_API") or "https://pay.xrocket.tg"
+).strip().rstrip("/")
+
+#: В чём выставлять счёт. USDT привязан к доллару, и цена в приложении
+#: совпадает с той, что человек увидит в кошельке. Список того, что
+#: xRocket принимает, отдаёт его же GET /currencies/available.
+XROCKET_ASSET = (os.getenv("XROCKET_ASSET") or "USDT").strip().upper()
+
+
+def xrocket_ready() -> bool:
+    return bool(XROCKET_TOKEN)
 
 
 # --- документы и реквизиты --------------------------------------------

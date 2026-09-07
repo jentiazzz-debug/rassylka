@@ -46,6 +46,7 @@ import admin  # noqa: E402
 import broadcast  # noqa: E402
 import chats  # noqa: E402
 import crypto  # noqa: E402
+import cryptobot  # noqa: E402
 import db  # noqa: E402
 import handlers  # noqa: E402
 import keyboards  # noqa: E402
@@ -55,6 +56,7 @@ import richtext  # noqa: E402
 import platega  # noqa: E402
 import tdata  # noqa: E402
 import texts  # noqa: E402
+import xrocket  # noqa: E402
 import webapp  # noqa: E402
 
 # Консоль Windows по умолчанию не в UTF-8, и один эмодзи в отчёте роняет
@@ -904,6 +906,100 @@ async def check_payments() -> None:
         (int(time.time()) + 86400, USER),
     )
     await db._conn().commit()
+
+
+async def check_xrocket() -> None:
+    print("\nОплата через xRocket")
+
+    # Без ключа способ просто не показывается: пустая кнопка оплаты хуже
+    # отсутствующей.
+    config.XROCKET_TOKEN = ""
+    check("без ключа xRocket выключен", not xrocket.ready())
+
+    config.XROCKET_TOKEN = "test-rocket-key"
+    check("с ключом включается", xrocket.ready())
+
+    # Цена одна и та же в обоих кошельках: разные цены за одно и то же
+    # выглядели бы наценкой за выбор кошелька.
+    pack = config.CRYPTO_PACKS[0]
+    check("пачки те же, что у CryptoBot",
+          xrocket.price_of(pack["coins"]) == pack["usd"],
+          str(pack))
+    check("чужая пачка не продаётся", xrocket.price_of(999999) is None)
+
+    # Счета обоих кошельков лежат в одной таблице, и сверка каждого
+    # обязана видеть только свои: иначе один кошелёк закрывал бы счета
+    # другого.
+    await db.open_invoice("xrocket:777", "order-x", USER, 50, 1.0,
+                          provider="xrocket")
+    await db.open_invoice("crypto:888", "order-c", USER, 50, 1.0,
+                          provider="crypto")
+    pending = await db.pending_invoices()
+    mine = [r for r in pending if r["provider"] == "xrocket"]
+    check("счёт xRocket отличим от чужого",
+          [r["transaction_id"] for r in mine] == ["xrocket:777"], str(pending))
+
+    # Начисление — по нашей записи о счёте, а не по числам из ответа.
+    before = await db.coins_of(USER)
+    check("оплата зачлась", await xrocket._credit("xrocket:777", None))
+    check("монеты начислены", await db.coins_of(USER) == before + 50,
+          str(await db.coins_of(USER)))
+
+    # Повтор не должен начислять второй раз: сверка ходит каждые пять
+    # минут, и один и тот же счёт она увидит не однажды.
+    check("повторная сверка не начисляет дважды",
+          not await xrocket._credit("xrocket:777", None))
+    check("баланс не тронут", await db.coins_of(USER) == before + 50)
+
+    await db.close_invoice("crypto:888", "expired")
+    config.XROCKET_TOKEN = ""
+
+
+async def check_custom_amount() -> None:
+    print("\nСвоё количество монет")
+
+    # Готовая пачка идёт по своей цене даже когда её число ввели руками:
+    # в пачке заложена скидка, и пересчёт по базовому курсу отменил бы её
+    # тому, кто не нажал на плитку, а набрал то же самое.
+    pack = config.RUB_PACKS[-1]
+    check("пачка сохраняет свою цену",
+          platega.price_for(pack["coins"]) == pack["rub"], str(pack))
+    check("и она не совпадает с базовым курсом",
+          pack["rub"] < pack["coins"] * config.RUB_PER_COIN, str(pack))
+
+    # Всё остальное — по базовому курсу способа.
+    odd = 137
+    check("рубли считаются по курсу",
+          platega.price_for(odd) == round(odd * config.RUB_PER_COIN, 2),
+          str(platega.price_for(odd)))
+    check("доллары считаются по курсу",
+          cryptobot.price_for(odd) == round(odd / config.COINS_PER_USD, 2),
+          str(cryptobot.price_for(odd)))
+    check("оба кошелька считают одинаково",
+          xrocket.price_for(odd) == cryptobot.price_for(odd))
+
+    # Нижний порог у каждого способа свой: у эквайринга своя минимальная
+    # сумма, у криптокошелька — своя. Общий порог обманул бы человека:
+    # он ввёл бы «допустимое», а счёт не открылся.
+    crypto_min = cryptobot.min_coins()
+    check("крипта не продаётся центами",
+          crypto_min >= config.CRYPTO_MIN_USD * config.COINS_PER_USD,
+          str(crypto_min))
+    check("ниже порога крипта не продаётся",
+          cryptobot.price_for(crypto_min - 1) is None)
+    check("ровно на пороге — продаётся",
+          cryptobot.price_for(crypto_min) is not None)
+    check("у рублей порог свой",
+          platega.min_coins() * config.RUB_PER_COIN >= config.RUB_MIN,
+          str(platega.min_coins()))
+
+    # Потолок общий: он про то, сколько монет вообще бывает на счету.
+    check("выше потолка не продаётся",
+          platega.price_for(config.COIN_MAX + 1) is None
+          and cryptobot.price_for(config.COIN_MAX + 1) is None
+          and xrocket.price_for(config.COIN_MAX + 1) is None)
+    check("мусор вместо числа не продаётся",
+          platega.price_for(0) is None and cryptobot.price_for(-5) is None)
 
 
 async def check_referrals() -> None:
@@ -1841,6 +1937,8 @@ def check_wiring() -> None:
         "POST /api/login/code",
         "POST /api/login/password",
         "POST /api/account/forget",
+        "POST /api/invoice/crypto",
+        "POST /api/invoice/xrocket",
     ):
         check(f"есть ручка {need}", need in routes, str(sorted(routes)))
 
@@ -1861,6 +1959,8 @@ async def run() -> None:
         await check_tdata()
         await check_account_api()
         await check_payments()
+        await check_xrocket()
+        await check_custom_amount()
         await check_referrals()
         await check_materials()
         await check_admin()

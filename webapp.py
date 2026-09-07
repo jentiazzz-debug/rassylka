@@ -32,6 +32,7 @@ import broadcast
 import chats
 import config
 import cryptobot
+import xrocket
 import db
 import handlers
 import legal
@@ -393,7 +394,21 @@ async def api_profile(request: web.Request, user: dict, data: dict) -> web.Respo
                 {"coins": pack["coins"], "usd": pack["usd"]}
                 for pack in config.CRYPTO_PACKS
             ] if cryptobot.ready() else [],
+            "xrocket_packs": [
+                {"coins": pack["coins"], "usd": pack["usd"]}
+                for pack in config.CRYPTO_PACKS
+            ] if xrocket.ready() else [],
             "coins_per_usd": config.COINS_PER_USD,
+            "rub_per_coin": config.RUB_PER_COIN,
+            # Нижний порог у каждого способа свой: у эквайринга своя
+            # минимальная сумма, у криптокошелька — своя. Одно общее
+            # число здесь врало бы про половину способов.
+            "min_coins": {
+                "stars": config.COIN_MIN,
+                "rub": platega.min_coins(),
+                "crypto": cryptobot.min_coins(),
+                "xrocket": xrocket.min_coins(),
+            },
             "rub_packs": [
                 {"coins": pack["coins"], "rub": pack["rub"]}
                 for pack in config.RUB_PACKS
@@ -417,6 +432,14 @@ async def api_profile(request: web.Request, user: dict, data: dict) -> web.Respo
                 "percent": config.REF_PERCENT,
             },
         }
+    )
+
+
+def _too_small(minimum: int) -> str:
+    """Отказ с числом, а не с «нельзя»: иначе непонятно, что вводить."""
+    return (
+        f"Этим способом можно купить от {minimum} до {config.COIN_MAX} "
+        f"{config.COIN_NAME}."
     )
 
 
@@ -969,12 +992,30 @@ async def api_crypto_invoice(
     if not cryptobot.ready():
         return _fail("Оплата криптой сейчас недоступна.")
     coins = _int(data.get("coins"))
-    if cryptobot.price_of(coins) is None:
-        return _fail("Такой пачки монет нет.")
+    if cryptobot.price_for(coins) is None:
+        return _fail(_too_small(cryptobot.min_coins()))
     try:
         invoice = await cryptobot.create(int(user["id"]), coins)
     except Exception as error:
         log.exception("счёт CryptoBot на %s монет не создался", coins)
+        return _fail(f"Счёт не создался: {type(error).__name__}")
+    return web.json_response({"ok": True, "url": invoice["url"]})
+
+
+@authed
+async def api_xrocket_invoice(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    """Счёт в USDT через @xRocket."""
+    if not xrocket.ready():
+        return _fail("Оплата через xRocket сейчас недоступна.")
+    coins = _int(data.get("coins"))
+    if xrocket.price_for(coins) is None:
+        return _fail(_too_small(xrocket.min_coins()))
+    try:
+        invoice = await xrocket.create(int(user["id"]), coins)
+    except Exception as error:
+        log.exception("счёт xRocket на %s монет не создался", coins)
         return _fail(f"Счёт не создался: {type(error).__name__}")
     return web.json_response({"ok": True, "url": invoice["url"]})
 
@@ -987,8 +1028,8 @@ async def api_rub_invoice(
     if not config.platega_ready():
         return _fail("Оплата рублями сейчас недоступна. Напишите в поддержку.")
     coins = _int(data.get("coins"))
-    if platega.price_of(coins) is None:
-        return _fail("Такой пачки монет нет.")
+    if platega.price_for(coins) is None:
+        return _fail(_too_small(platega.min_coins()))
     try:
         invoice = await platega.create(
             int(user["id"]), coins, user.get("username")
@@ -1135,6 +1176,7 @@ def build() -> web.Application:
             web.post(config.PLATEGA_CALLBACK_PATH, platega_callback),
             web.post("/api/invoice/rub", api_rub_invoice),
             web.post("/api/invoice/crypto", api_crypto_invoice),
+            web.post("/api/invoice/xrocket", api_xrocket_invoice),
             web.post("/api/admin/find", api_admin_find),
             web.post("/api/admin/user", api_admin_user),
             web.post("/api/admin/grant", api_admin_grant),

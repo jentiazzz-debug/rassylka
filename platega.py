@@ -55,22 +55,41 @@ def _headers() -> dict:
 
 
 def price_of(coins: int) -> float | None:
-    """Цена пачки в рублях. None — такой пачки нет.
-
-    Произвольные суммы здесь не продаются намеренно: у рублёвой оплаты
-    есть комиссия эквайринга, и пачки посчитаны с её учётом.
-    """
+    """Цена готовой пачки в рублях. None — такой пачки нет."""
     for pack in config.RUB_PACKS:
         if pack["coins"] == coins:
             return pack["rub"]
     return None
 
 
+def min_coins() -> int:
+    """Меньше этого рублями не продать: у эквайринга свой минимум."""
+    from math import ceil
+
+    return max(config.COIN_MIN, ceil(config.RUB_MIN / config.RUB_PER_COIN))
+
+
+def price_for(coins: int) -> float | None:
+    """Цена любого количества монет. None — столько продать нельзя.
+
+    Готовая пачка идёт по своей цене: в ней заложена скидка, и считать
+    её по базовому курсу значило бы отменить скидку у того, кто ввёл то
+    же число руками. Всё остальное — по базовому курсу `RUB_PER_COIN`, в
+    который комиссия эквайринга уже заложена.
+    """
+    exact = price_of(coins)
+    if exact is not None:
+        return exact
+    if not (min_coins() <= coins <= config.COIN_MAX):
+        return None
+    return round(coins * config.RUB_PER_COIN, 2)
+
+
 async def create(user_id: int, coins: int, username: str | None) -> dict:
     """Выставить счёт. Возвращает {'url': ..., 'id': ...}."""
     if not config.platega_ready():
         raise RuntimeError("Platega не настроена")
-    rub = price_of(coins)
+    rub = price_for(coins)
     if rub is None:
         raise ValueError("нет такой пачки монет")
 
@@ -274,3 +293,9 @@ async def worker(bot) -> None:
             await cryptobot.reconcile(bot)
         except Exception:
             log.exception("сверка счетов CryptoBot сорвалась")
+        try:
+            import xrocket
+
+            await xrocket.reconcile(bot)
+        except Exception:
+            log.exception("сверка счетов xRocket сорвалась")

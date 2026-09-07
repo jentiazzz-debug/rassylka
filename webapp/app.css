@@ -454,6 +454,15 @@ button.row:disabled { opacity: .5; cursor: default; }
 }
 .tag.hot { color: #fff; background: var(--ink); left: 8px; right: auto; }
 
+/* Своё количество: поле и кнопка в одной строке панели. Поле тянется,
+   кнопка ровно под свою подпись — иначе на узком экране «Ок» отъедало
+   бы у поля половину ширины. */
+.own { gap: 8px; }
+.own-input { flex: 1; min-width: 0; padding: 10px 12px; }
+.own-input::-webkit-outer-spin-button,
+.own-input::-webkit-inner-spin-button { appearance: none; margin: 0; }
+.own-apply { flex: none; padding: 10px 16px; font-weight: 600; }
+
 .pay-row { justify-content: space-between; }
 .pay-total {
   display: flex;

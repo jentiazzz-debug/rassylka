@@ -654,6 +654,7 @@ let topup = { method: null, coins: null };
 /** Способы оплаты. Порядок неслучаен: звёзды не уводят из Telegram, и
  *  для большинства это самый короткий путь. */
 function methods() {
+  const limits = me.min_coins || {};
   const out = [{
     id: 'stars', icon: 'star', title: 'Telegram Stars',
     note: 'внутри Telegram, без сторонних сайтов',
@@ -661,7 +662,8 @@ function methods() {
       coins: p.coins, price: p.stars, base: p.base,
       popular: p.popular, label: p.stars + ' \u2605',
     })),
-    custom: true,
+    min: limits.stars || me.custom.min,
+    price: (coins) => coins * me.custom.rate + ' \u2605',
   }];
   if ((me.rub_packs || []).length) {
     out.push({
@@ -670,6 +672,8 @@ function methods() {
       packs: me.rub_packs.map((p) => ({
         coins: p.coins, price: p.rub, label: Math.round(p.rub) + ' \u20bd',
       })),
+      min: limits.rub || me.custom.min,
+      price: (coins) => Math.round(coins * me.rub_per_coin) + ' \u20bd',
     });
   }
   if ((me.crypto_packs || []).length) {
@@ -679,6 +683,22 @@ function methods() {
       packs: me.crypto_packs.map((p) => ({
         coins: p.coins, price: p.usd, label: '$' + p.usd,
       })),
+      min: limits.crypto || me.custom.min,
+      price: (coins) => '$' + (coins / me.coins_per_usd).toFixed(2),
+    });
+  }
+  // Второй криптокошелёк рядом с первым, а не вместо него: кошелёк у
+  // человека уже какой-то один, и «заведите нужный» — верный способ не
+  // получить оплату вовсе. Цена и там и там одна.
+  if ((me.xrocket_packs || []).length) {
+    out.push({
+      id: 'xrocket', icon: 'xrocket', title: 'xRocket',
+      note: 'криптовалютой \u00b7 $1 = ' + me.coins_per_usd + ' ' + me.coin_name,
+      packs: me.xrocket_packs.map((p) => ({
+        coins: p.coins, price: p.usd, label: '$' + p.usd,
+      })),
+      min: limits.xrocket || me.custom.min,
+      price: (coins) => '$' + (coins / me.coins_per_usd).toFixed(2),
     });
   }
   return out;
@@ -739,7 +759,8 @@ function renderTopupPacks() {
   const best = method.packs.reduce((max, p) => Math.max(max, p.base > p.price
     ? Math.round((1 - p.price / p.base) * 100) : 0), 0);
   $('topup-aside').textContent = best ? 'скидка до ' + best + '%' : '';
-  $('topup-custom').hidden = !method.custom;
+  $('topup-custom').hidden = false;
+  $('topup-own').hidden = true;
   $('topup-note').textContent = method.note;
 
   const box = $('topup-packs');
@@ -788,29 +809,53 @@ function renderTopupPacks() {
     box.appendChild(button);
   }
 
+  // Готовая пачка идёт по своей цене: в ней заложена скидка, и
+  // пересчёт по базовому курсу отменил бы её тому, кто ввёл то же число
+  // руками. Всё остальное — по базовому курсу способа.
   const chosen = method.packs.find((p) => p.coins === topup.coins);
   $('topup-total').textContent = chosen ? chosen.label
-    : (method.id === 'stars' && topup.coins
-      ? topup.coins * me.custom.rate + ' \u2605' : '\u2014');
+    : (topup.coins ? method.price(topup.coins) : '\u2014');
   $('topup-pay').disabled = !topup.coins;
 }
 
+/** Показать поле для своего количества и подсказать пределы. */
 function askTopupCustom() {
-  const limits = me.custom;
-  const raw = window.prompt(
-    'Сколько ' + me.coin_name + ' купить? От ' + limits.min
-      + ' до ' + limits.max + '.',
-    String(topup.coins || limits.min),
-  );
-  if (raw === null) return;
-  const coins = parseInt(String(raw).replace(/[^0-9]/g, ''), 10);
-  if (!coins || coins < limits.min || coins > limits.max) {
-    alertBox('Можно от ' + limits.min + ' до ' + limits.max + ' '
+  const method = currentMethod();
+  if (!method) return;
+  const field = $('topup-own-input');
+  // Нижний порог берётся у способа, а не общий: у эквайринга своя
+  // минимальная сумма, у криптокошелька своя, и общее число обмануло бы
+  // человека — он ввёл бы допустимое, а счёт не открылся бы.
+  field.placeholder = 'От ' + method.min + ' до ' + me.custom.max;
+  field.min = method.min;
+  field.max = me.custom.max;
+  field.value = topup.coins || '';
+  $('topup-custom').hidden = true;
+  $('topup-own').hidden = false;
+  field.focus();
+}
+
+function applyTopupCustom() {
+  const method = currentMethod();
+  if (!method) return;
+  const min = method.min;
+  const max = me.custom.max;
+  const coins = parseInt(
+    String($('topup-own-input').value).replace(/[^0-9]/g, ''), 10);
+  if (!coins || coins < min || coins > max) {
+    alertBox('Этим способом можно от ' + min + ' до ' + max + ' '
       + me.coin_name + '.');
     return;
   }
   topup.coins = coins;
+  const own = $('topup-own');
   renderTopupPacks();
+  // renderTopupPacks прячет поле, но человек только что им пользовался:
+  // пусть остаётся открытым, чтобы было видно введённое число.
+  $('topup-custom').hidden = true;
+  own.hidden = false;
+  $('topup-own-input').value = coins;
+  haptic('light');
 }
 
 async function payTopup() {
@@ -839,7 +884,7 @@ async function payTopup() {
     return;
   }
 
-  const path = method.id === 'rub' ? '/api/invoice/rub' : '/api/invoice/crypto';
+  const path = '/api/invoice/' + method.id;
   const done = busy(button, 'Открываем счёт…');
   const result = await api(path, { coins: topup.coins });
   done();
@@ -1160,8 +1205,9 @@ let picker = { chats: [], folders: [], materials: [] };
 function renderMaterials(box, selected, onPick, multi) {
   box.textContent = '';
   if (!picker.materials.length) {
-    hintInto(box, 'В «Избранном» этого аккаунта пока пусто. Отправьте туда ' +
-      'сообщение и нажмите «Обновить список чатов».');
+    hintInto(box, 'В «Избранном» этого аккаунта пока пусто. Отправьте туда '
+      + 'сообщение — с того самого аккаунта, с которого рассылаете, — '
+      + 'и нажмите «Перечитать «Избранное»» ниже.');
     return;
   }
   for (const material of picker.materials) {
@@ -1578,12 +1624,45 @@ async function rescan() {
     haptic('error');
     return;
   }
-  note.textContent =
-    `Нашлось ${result.chats} ${plural(result.chats, 'чат', 'чата', 'чатов')}` +
-    ` и ${result.folders} ${plural(result.folders, 'папка', 'папки', 'папок')}.`;
+  note.textContent = scanReport(result);
   note.hidden = false;
   haptic('success');
   await loadChats();
+}
+
+/** Что нашлось при сканировании — включая «Избранное».
+
+    Число материалов здесь не для полноты: без него человек, у которого
+    список пуст, не может отличить «Избранное пустое» от «его не
+    прочитали». */
+function scanReport(result) {
+  return `Нашлось ${result.chats} `
+    + plural(result.chats, 'чат', 'чата', 'чатов')
+    + `, ${result.folders} `
+    + plural(result.folders, 'папка', 'папки', 'папок')
+    + `, в «Избранном» ${result.materials} `
+    + plural(result.materials, 'сообщение', 'сообщения', 'сообщений') + '.';
+}
+
+/** Перечитать «Избранное» прямо со второго шага. */
+async function rescanSaved() {
+  const button = $('rescan-saved');
+  const note = $('saved-note');
+  const done = busy(button, 'Читаем «Избранное»…');
+  note.hidden = true;
+  const result = await api('/api/chats/scan', { account_id: draft.accountId });
+  done();
+  if (!result.ok) {
+    note.textContent = result.error;
+    note.hidden = false;
+    haptic('error');
+    return;
+  }
+  note.textContent = scanReport(result);
+  note.hidden = false;
+  haptic(result.materials ? 'success' : 'light');
+  await loadMaterials(draft.accountId);
+  renderMaterials($('material-list'), draft.savedIds, renderVariantCount, true);
 }
 
 async function createCampaign() {
@@ -2017,11 +2096,16 @@ function wire() {
   });
   $('open-topup').onclick = openTopup;
   $('topup-custom').onclick = askTopupCustom;
+  $('topup-own-apply').onclick = applyTopupCustom;
+  $('topup-own-input').onkeydown = (event) => {
+    if (event.key === 'Enter') applyTopupCustom();
+  };
   $('topup-pay').onclick = payTopup;
   $('add-tdata').onclick = openTdata;
   $('tdata-send').onclick = uploadTdata;
   $('add-campaign').onclick = openNew;
   $('rescan').onclick = rescan;
+  $('rescan-saved').onclick = rescanSaved;
   $('step-next').onclick = stepNext;
   $('step-back').onclick = stepBack;
   $('variant-add').onclick = addVariant;

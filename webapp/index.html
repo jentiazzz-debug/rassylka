@@ -152,6 +152,14 @@
       <circle cx="12" cy="12" r="9"/>
       <path d="M7.6 12.1l8.6-3.4-2.3 8.2-2.4-2.6-2.2 1.6.2-2.4z"/>
     </g>
+    <!-- xRocket: его знак — ракета. -->
+    <g id="i-xrocket">
+      <path d="M12 3.2c2.9 2 4.6 5.3 4.6 8.9 0 1.6-.3 3.1-.9 4.5H8.3a11 11 0 0 1-.9-4.5c0-3.6 1.7-6.9 4.6-8.9z"/>
+      <circle cx="12" cy="10.4" r="1.9"/>
+      <path d="M7.7 14.2L5.2 16v3l2.6-1.3"/>
+      <path d="M16.3 14.2L18.8 16v3l-2.6-1.3"/>
+      <path d="M10.4 19.4c.4 1 .9 1.7 1.6 2.2.7-.5 1.2-1.2 1.6-2.2"/>
+    </g>
     <g id="i-wallet">
       <path d="M4 8.4A2.4 2.4 0 0 1 6.4 6h11.2A2.4 2.4 0 0 1 20 8.4v9.2a2.4 2.4 0 0 1-2.4 2.4H6.4A2.4 2.4 0 0 1 4 17.6z"/>
       <path d="M4 10.4h16"/>
@@ -387,6 +395,15 @@
 
       <h2 class="section-title">Из «Избранного»</h2>
       <div id="material-list" class="picker"></div>
+      <!-- Своя кнопка обновления: список читается тем же заходом, что и
+           чаты, но кнопка жила шагом раньше. Человек, у которого тут
+           пусто, о ней уже не помнит — а подсказка отправляла его
+           искать её на предыдущем экране. -->
+      <button id="rescan-saved" class="btn ghost">
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-refresh"/></svg>
+        Перечитать «Избранное»
+      </button>
+      <p id="saved-note" class="hint small pad" hidden></p>
       <p class="hint small pad">
         Отправьте сообщение в «Избранное» того аккаунта, с которого
         рассылаете, и отметьте здесь: уйдёт ровно оно — фото, гифка,
@@ -474,10 +491,18 @@
       </div>
       <div class="panel">
         <div class="grid" id="topup-packs"></div>
-        <button id="topup-custom" class="row row-sep" hidden>
+        <button id="topup-custom" class="row row-sep">
           <span class="row-body"><span class="row-title">Своё количество</span></span>
           <svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg>
         </button>
+        <!-- Поле, а не системный prompt: тот в WebView выглядит чужим
+             окном браузера поверх приложения, а на части клиентов его
+             попросту нет. -->
+        <div class="row row-sep own" id="topup-own" hidden>
+          <input class="field own-input" id="topup-own-input" type="number"
+                 inputmode="numeric" placeholder="Сколько монет">
+          <button class="btn small own-apply" id="topup-own-apply">Ок</button>
+        </div>
         <div class="row pay-row">
           <span class="hint">К оплате</span>
           <span class="pay-total" id="topup-total">—</span>
