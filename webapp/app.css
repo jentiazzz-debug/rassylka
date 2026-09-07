@@ -718,6 +718,9 @@ input[type="file"].field::file-selector-button {
   align-items: center;
   gap: 6px;
 }
+/* Две ссылки-кнопки в строке прикрепления не должны слипаться. */
+.variant-attach .attach-add + .attach-add { margin-left: 14px; }
+
 .attach-drop {
   flex: none;
   border: 0;

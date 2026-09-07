@@ -87,6 +87,13 @@ async def _read_dialogs(client) -> list[dict]:
                 # различает их флаг. Нужен и папкам вида «все группы»,
                 # и списку чатов в приложении.
                 "broadcast": bool(getattr(entity, "broadcast", False)),
+                # Платные сообщения. Цена приходит прямо в диалоге, и
+                # спрашивать её отдельным запросом на каждый чат не
+                # нужно — а знать её надо до отправки: узнавать цену из
+                # отказа значит платить вслепую.
+                "paid_stars": int(
+                    getattr(entity, "send_paid_messages_stars", 0) or 0
+                ),
             }
         )
     return rows
@@ -242,6 +249,64 @@ async def _read_saved(client) -> list[dict]:
             }
         )
     return rows
+
+
+async def upload_to_saved(user_id: int, account_id: int, path,
+                          filename: str, as_file: bool) -> dict:
+    """Положить файл в «Избранное» аккаунта и вернуть его материалом.
+
+    Так человек прикрепляет фото, не выходя из приложения. Файл всё
+    равно оказывается в «Избранном», а не у нас: оттуда его берёт
+    рассылка, там он живёт у Telegram, и никакого своего хранилища
+    заводить не приходится.
+
+    `as_file` — отправить документом, без сжатия. Для картинки это
+    обычно не нужно, а для гифки и голосового важно: сжатая гифка
+    перестаёт быть гифкой.
+    """
+    account = await db.account(user_id, account_id)
+    if account is None:
+        raise accounts.LoginError("Такого аккаунта нет.")
+
+    client = None
+    try:
+        client = await accounts.client_for(account)
+        if not await client.is_user_authorized():
+            await db.mark_account(account.id, "dead", "сессия отозвана в Telegram")
+            raise accounts.LoginError(
+                "Аккаунт больше не в сети — подключите его заново.", restart=True
+            )
+        sent = await client.send_file(
+            "me", str(path), force_document=as_file, file_name=filename
+        )
+        # Перечитываем «Избранное» целиком, а не дописываем одну строку:
+        # список материалов и так собирается одним заходом, а частичное
+        # обновление разошлось бы с ним при первой же правке.
+        saved = await _read_saved(client)
+    except accounts.LoginError:
+        raise
+    except Exception as error:
+        from telethon import errors
+
+        if isinstance(error, errors.FloodWaitError):
+            raise accounts.LoginError(
+                f"Telegram просит подождать {error.seconds // 60 or 1} мин "
+                "перед следующей загрузкой."
+            )
+        log.exception("загрузка в «Избранное» аккаунта %s сорвалась", account_id)
+        raise accounts.LoginError(
+            f"Не удалось загрузить файл: {type(error).__name__}"
+        )
+    finally:
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+    await db.save_materials(account.id, saved)
+    log.info("в «Избранное» аккаунта %s загружен файл %s", account_id, filename)
+    return {"msg_id": int(sent.id), "materials": await db.materials(account.id)}
 
 
 async def scan(user_id: int, account_id: int) -> dict:

@@ -215,6 +215,7 @@ async def _state(user_id: int) -> dict:
             await _campaign_view(c) for c in await db.campaigns(user_id)
         ],
         "watches": await _watch_cards(user_id),
+        "paid_max_stars": await db.paid_max_stars(user_id),
         "limits": {
             "max_accounts": config.MAX_ACCOUNTS,
             "trial_days": config.TRIAL_DAYS,
@@ -222,6 +223,8 @@ async def _state(user_id: int) -> dict:
             "daily_limit": config.DAILY_LIMIT,
             "max_text": config.MAX_TEXT,
             "max_watches": config.MAX_WATCHES,
+            "max_upload_mb": config.MAX_UPLOAD_MB,
+            "paid_cap": config.PAID_MAX_STARS,
             "comment_min_delay": config.COMMENT_MIN_DELAY,
             "max_variants": config.MAX_VARIANTS,
         },
@@ -609,6 +612,89 @@ async def api_account_tdata(request: web.Request) -> web.Response:
             archive.unlink(missing_ok=True)
 
 
+async def api_material_upload(request: web.Request) -> web.Response:
+    """Приём файла и отправка его в «Избранное» аккаунта.
+
+    Без декоратора и отдельно от JSON-ручек: тело здесь multipart, и
+    подпись приходится брать из заголовка. Файл пишется на диск потоком
+    с проверкой размера — целиком в память его принимать нельзя, туда
+    прилетит что угодно.
+
+    У нас файл не остаётся: он уходит в «Избранное» аккаунта и стирается
+    с диска в любом случае — и при удаче, и при ошибке, и при обрыве.
+    Своего хранилища чужих фото и голосовых мы не заводим.
+    """
+    user = parse_init_data(request.headers.get(INIT_HEADER, ""))
+    if user is None:
+        return web.json_response(
+            {"ok": False, "error": "Откройте приложение из бота заново."},
+            status=401,
+        )
+    user_id = int(user["id"])
+
+    limit = config.MAX_UPLOAD_MB * 1024 * 1024
+    account_id = 0
+    as_file = False
+    filename = "file"
+    saved: Path | None = None
+
+    try:
+        reader = await request.multipart()
+    except Exception:
+        return _fail("Файл не пришёл. Попробуйте ещё раз.")
+
+    try:
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if part.name == "account_id":
+                account_id = _int(await part.text())
+                continue
+            if part.name == "as_file":
+                as_file = (await part.text()).strip() in {"1", "true", "yes"}
+                continue
+            if part.name != "file":
+                continue
+
+            filename = (part.filename or "file")[:96]
+            suffix = Path(filename).suffix[:12]
+            handle, path = tempfile.mkstemp(suffix=suffix, dir=config.DATA_DIR)
+            saved = Path(path)
+            size = 0
+            with os.fdopen(handle, "wb") as out:
+                while True:
+                    chunk = await part.read_chunk(256 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > limit:
+                        return _fail(
+                            f"Файл больше {config.MAX_UPLOAD_MB} МБ."
+                        )
+                    out.write(chunk)
+
+        if saved is None or not saved.exists() or saved.stat().st_size == 0:
+            return _fail("Прикрепите файл.")
+
+        account = await db.account(user_id, account_id)
+        if account is None:
+            return _fail("Выберите аккаунт.")
+        if account.status != "ok":
+            return _fail("Этот аккаунт не в сети — подключите его заново.")
+
+        try:
+            result = await chats.upload_to_saved(
+                user_id, account_id, saved, filename, as_file
+            )
+        except accounts.LoginError as error:
+            return _fail(error.message)
+        return web.json_response({"ok": True, **result})
+    finally:
+        if saved is not None:
+            saved.unlink(missing_ok=True)
+
+
 # --- чаты и папки -----------------------------------------------------
 
 
@@ -782,6 +868,27 @@ async def _watch_form(user: dict, data: dict) -> tuple[dict, str]:
         "delay_max": high,
         "pick": pick,
     }, ""
+
+
+@authed
+async def api_paid_limit(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    """Потолок платы за сообщение.
+
+    Звёзды списываются с подключённого аккаунта, а не с баланса в боте,
+    поэтому значение и хранится у человека, а не в настройках сервиса:
+    это его деньги и его решение.
+    """
+    user_id = int(user["id"])
+    stars = max(0, _int(data.get("stars")))
+    if stars > config.PAID_MAX_STARS:
+        return _fail(
+            f"Больше {config.PAID_MAX_STARS} ⭐️ за сообщение — это уже не "
+            "рассылка. Поставьте меньше."
+        )
+    await db.set_paid_max_stars(user_id, stars)
+    return web.json_response({"ok": True, "paid_max_stars": stars})
 
 
 @authed
@@ -1375,12 +1482,14 @@ def build() -> web.Application:
             web.post("/api/account/verify", api_account_verify),
             web.post("/api/account/forget", api_account_forget),
             web.post("/api/account/tdata", api_account_tdata),
+            web.post("/api/material/upload", api_material_upload),
             web.post("/api/profile", api_profile),
             web.post("/api/invoice", api_invoice),
             web.post("/api/subscribe", api_subscribe),
             web.post("/api/materials", api_materials),
             web.post("/api/chats", api_chats),
             web.post("/api/chats/scan", api_chats_scan),
+            web.post("/api/paid-limit", api_paid_limit),
             web.post("/api/watch/create", api_watch_create),
             web.post("/api/watch/edit", api_watch_edit),
             web.post("/api/watch/toggle", api_watch_toggle),

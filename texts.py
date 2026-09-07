@@ -447,6 +447,17 @@ def watch_material_gone(watch) -> str:
     )
 
 
+def watch_too_expensive(watch, stars: int) -> str:
+    return (
+        f"💫 <b>Автокомментарии в «{escape(watch.title)}» на паузе</b>\n\n"
+        f"Этот чат берёт <b>{stars}</b> ⭐️ за сообщение — больше, чем вы "
+        "разрешили тратить.\n\n"
+        "Звёзды списываются с самого подключённого аккаунта, а не с "
+        "баланса в боте, поэтому решение за вами: поднимите потолок в "
+        "приложении, раздел «Профиль», — и наблюдение продолжится."
+    )
+
+
 def watch_stuck(watch, reason: str) -> str:
     return (
         f"⚠️ <b>Автокомментарии в «{escape(watch.title)}» на паузе</b>\n\n"

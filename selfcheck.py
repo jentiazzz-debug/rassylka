@@ -1905,6 +1905,78 @@ async def check_attached_media() -> None:
           and "return packVariants(draft);" in js)
 
 
+async def check_paid_chats() -> None:
+    print("\nПлатные чаты и загрузка медиа")
+    account_id = await db.save_account(
+        USER, "+79990000600", crypto.encrypt("s"), tg_id=60,
+        name="Платный", username=None,
+    )
+    await db.save_chats(account_id, [
+        {"chat_id": -3001, "raw_id": 3001, "access_hash": 1, "kind": "channel",
+         "broadcast": False, "title": "Бесплатная группа", "username": None},
+        {"chat_id": -3002, "raw_id": 3002, "access_hash": 2, "kind": "channel",
+         "broadcast": False, "title": "Платная группа", "username": None,
+         "paid_stars": 25},
+        {"chat_id": -3003, "raw_id": 3003, "access_hash": 3, "kind": "channel",
+         "broadcast": False, "title": "Очень платная", "username": None,
+         "paid_stars": 500},
+    ])
+    saved = {c.chat_id: c for c in await db.chats(account_id)}
+    check("цена чата сохранилась", saved[-3002].paid_stars == 25,
+          str(saved[-3002].paid_stars))
+    check("бесплатный так и остался бесплатным",
+          saved[-3001].paid_stars == 0)
+
+    # По умолчанию в платные чаты не пишем: звёзды списываются с
+    # подключённого аккаунта, и тратить их молча нельзя.
+    check("потолок по умолчанию нулевой", await db.paid_max_stars(USER) == 0)
+    check("бесплатный чат проходит без вопросов",
+          await broadcast.paid_check(USER, saved[-3001]) == 0)
+    try:
+        await broadcast.paid_check(USER, saved[-3002])
+        check("платный чат без разрешения не проходит", False)
+    except broadcast.TooExpensive as error:
+        check("платный чат без разрешения не проходит", error.stars == 25)
+
+    # Разрешили — пишем, и ровно столько, сколько просит чат.
+    await db.set_paid_max_stars(USER, 50)
+    check("потолок сохранился", await db.paid_max_stars(USER) == 50)
+    check("чат по карману проходит",
+          await broadcast.paid_check(USER, saved[-3002]) == 25)
+    try:
+        await broadcast.paid_check(USER, saved[-3003])
+        check("чат дороже потолка не проходит", False)
+    except broadcast.TooExpensive as error:
+        check("чат дороже потолка не проходит",
+              error.stars == 500 and error.limit == 50)
+
+    # Ровно на потолке — проходит: иначе «до 50» читалось бы как «до 49».
+    await db.set_paid_max_stars(USER, 25)
+    check("ровно на потолке проходит",
+          await broadcast.paid_check(USER, saved[-3002]) == 25)
+    await db.set_paid_max_stars(USER, 0)
+
+    # Флаг оплаты у Telethon есть только в самих запросах, не в
+    # высокоуровневых методах, — на этом построена вся ветка send_paid.
+    from telethon.tl.functions.messages import SendMediaRequest, SendMessageRequest
+    import inspect
+
+    for request in (SendMessageRequest, SendMediaRequest):
+        check(f"{request.__name__} умеет allow_paid_stars",
+              "allow_paid_stars" in inspect.signature(request.__init__).parameters)
+
+    # Загрузка медиа в «Избранное» — чтобы не ходить туда руками.
+    js = (Path(__file__).parent / "webapp" / "app.js").read_text(encoding="utf-8")
+    check("в приложении есть загрузка файла",
+          "function uploadMaterial(" in js and "/api/material/upload" in js)
+    check("гифка и голосовое уходят без сжатия",
+          "gif|ogg|oga|mp3|m4a|pdf" in js)
+    check("у загрузки есть свой потолок размера",
+          config.MAX_UPLOAD_MB > 0 and "max_upload_mb" in js)
+
+    await db.delete_account(USER, account_id)
+
+
 async def check_watches() -> None:
     print("\nАвтокомментарии под постами")
     account_id = await db.save_account(
@@ -2153,6 +2225,8 @@ def check_wiring() -> None:
         "POST /api/account/forget",
         "POST /api/invoice/crypto",
         "POST /api/invoice/xrocket",
+        "POST /api/paid-limit",
+        "POST /api/material/upload",
         "POST /api/watch/create",
         "POST /api/watch/edit",
         "POST /api/watch/toggle",
@@ -2191,6 +2265,7 @@ async def run() -> None:
         await check_platega()
         await check_variants()
         await check_attached_media()
+        await check_paid_chats()
         await check_watches()
         await check_joins()
         await check_footer_on_media()

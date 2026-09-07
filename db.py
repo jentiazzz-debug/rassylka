@@ -96,6 +96,8 @@ CREATE TABLE IF NOT EXISTS chats (
     -- Канал или супергруппа: у Telegram это один тип, различает их
     -- только флаг. В списке чатов их надо показывать по-разному.
     broadcast   INTEGER NOT NULL DEFAULT 0,
+    -- Сколько звёзд чат берёт за одно сообщение. 0 — бесплатный.
+    paid_stars  INTEGER NOT NULL DEFAULT 0,
     title       TEXT,
     username    TEXT,
     scanned_at  INTEGER NOT NULL,
@@ -379,6 +381,20 @@ async def _migrate() -> None:
         "campaigns", "text_cursor",
         "ALTER TABLE campaigns ADD COLUMN text_cursor INTEGER NOT NULL DEFAULT 0",
     )
+    await _ensure_column(
+        # Сколько звёзд чат берёт за сообщение. 0 — бесплатный, как было
+        # у всех до появления платных сообщений в Telegram.
+        "chats", "paid_stars",
+        "ALTER TABLE chats ADD COLUMN paid_stars INTEGER NOT NULL DEFAULT 0",
+    )
+    await _ensure_column(
+        # Потолок, выше которого человек платить не готов. 0 — не писать
+        # в платные чаты вовсе, и это значение по умолчанию: списываются
+        # звёзды с самого подключённого аккаунта, и тратить их молча
+        # нельзя.
+        "users", "paid_max_stars",
+        "ALTER TABLE users ADD COLUMN paid_max_stars INTEGER NOT NULL DEFAULT 0",
+    )
 
 
 async def _ensure_column(table: str, column: str, ddl: str) -> None:
@@ -556,6 +572,22 @@ async def spend_coins(user_id: int, coins: int, reason: str) -> bool:
     )
     await _conn().commit()
     return True
+
+
+async def paid_max_stars(user_id: int) -> int:
+    """Сколько звёзд человек готов платить за одно сообщение."""
+    row = await _fetchone(
+        "SELECT paid_max_stars FROM users WHERE user_id = ?", (user_id,)
+    )
+    return int(row["paid_max_stars"] or 0) if row else 0
+
+
+async def set_paid_max_stars(user_id: int, stars: int) -> None:
+    await _conn().execute(
+        "UPDATE users SET paid_max_stars = ? WHERE user_id = ?",
+        (max(0, stars), user_id),
+    )
+    await _conn().commit()
 
 
 async def coins_of(user_id: int) -> int:
@@ -876,6 +908,10 @@ class Chat:
     broadcast: bool
     title: str
     username: str | None
+    #: Сколько звёзд чат берёт за сообщение. 0 — бесплатный. Списываются
+    #: они с самого подключённого аккаунта, а не с нашего кошелька, —
+    #: поэтому решение «платить или нет» остаётся за человеком.
+    paid_stars: int = 0
 
 
 def _chat(row: aiosqlite.Row) -> Chat:
@@ -888,6 +924,7 @@ def _chat(row: aiosqlite.Row) -> Chat:
         broadcast=bool(row["broadcast"]),
         title=row["title"] or str(row["chat_id"]),
         username=row["username"],
+        paid_stars=int(row["paid_stars"] or 0),
     )
 
 
@@ -906,8 +943,9 @@ async def save_chats(account_id: int, rows: list[dict]) -> int:
         await _conn().executemany(
             """
             INSERT INTO chats (account_id, chat_id, raw_id, access_hash,
-                               kind, broadcast, title, username, scanned_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               kind, broadcast, title, username, paid_stars,
+                               scanned_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -919,6 +957,7 @@ async def save_chats(account_id: int, rows: list[dict]) -> int:
                     1 if row.get("broadcast") else 0,
                     row.get("title"),
                     row.get("username"),
+                    int(row.get("paid_stars") or 0),
                     now,
                 )
                 for row in rows

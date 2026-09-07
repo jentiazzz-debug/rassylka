@@ -446,6 +446,25 @@ function renderCampaigns() {
  *  состоянием рассылок незачем. */
 let me = null;
 
+function renderPaidLimit() {
+  const field = $('paid-limit');
+  if (document.activeElement !== field) {
+    field.value = state.paid_max_stars || 0;
+  }
+  field.max = state.limits.paid_cap || 100;
+}
+
+async function savePaidLimit(button) {
+  const stars = parseInt($('paid-limit').value, 10) || 0;
+  const done = busy(button, '…');
+  const result = await api('/api/paid-limit', { stars });
+  done();
+  if (!result.ok) return alertBox(result.error);
+  state.paid_max_stars = result.paid_max_stars;
+  renderPaidLimit();
+  haptic('success');
+}
+
 function renderProfile() {
   if (!me) return;
 
@@ -914,6 +933,7 @@ function renderMain() {
   renderAccounts();
   renderCampaigns();
   renderWatches();
+  renderPaidLimit();
   renderProfile();
   setPane(pane);
   show('main');
@@ -1670,18 +1690,87 @@ function attachRow(store, index, rerender) {
   const add = document.createElement('button');
   add.className = 'attach-add';
   add.appendChild(icon('clip', 'ic-s'));
-  add.append('Прикрепить фото, видео или голосовое');
+  add.append('Прикрепить');
   add.onclick = () => {
     if (!picker.materials.length) {
-      return alertBox('Сначала отправьте фото, видео или голосовое в '
-        + '«Избранное» того аккаунта, с которого рассылаете, и нажмите '
-        + '«Перечитать «Избранное»» ниже.');
+      // Пустое «Избранное» больше не тупик: тут же и загружаем.
+      return pickFileFor(store, index, rerender);
     }
     row.textContent = '';
     row.appendChild(buildAttachPicker(store, index, rerender));
+    const upload = document.createElement('button');
+    upload.className = 'attach-drop';
+    upload.title = 'Загрузить файл';
+    upload.appendChild(icon('upload', 'ic-s'));
+    upload.onclick = () => pickFileFor(store, index, rerender);
+    row.appendChild(upload);
   };
   row.appendChild(add);
+
+  const upload = document.createElement('button');
+  upload.className = 'attach-add';
+  upload.appendChild(icon('upload', 'ic-s'));
+  upload.append('Загрузить');
+  upload.onclick = () => pickFileFor(store, index, rerender);
+  row.appendChild(upload);
   return row;
+}
+
+/** Выбрать файл на телефоне и положить его в «Избранное» аккаунта.
+
+    Через «Избранное», а не в своё хранилище: файл всё равно должен
+    оказаться у Telegram — оттуда его берёт рассылка, — а держать чужие
+    фото и голосовые у себя ради того же результата незачем. */
+function pickFileFor(store, index, rerender) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*,video/*,audio/*,.gif,.mp4,.ogg,.mp3,.m4a,.pdf';
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const limit = (state.limits.max_upload_mb || 32) * 1024 * 1024;
+    if (file.size > limit) {
+      return alertBox('Файл больше ' + state.limits.max_upload_mb + ' МБ.');
+    }
+    await uploadMaterial(store, index, rerender, file);
+  };
+  input.click();
+}
+
+async function uploadMaterial(store, index, rerender, file) {
+  const box = document.createElement('div');
+  box.className = 'hint small pad';
+  box.textContent = 'Загружаем «' + file.name + '»…';
+  const host = store === draft ? $('variant-list')
+    : (store === editing ? $('edit-variants') : $('watch-variants'));
+  host.appendChild(box);
+
+  const form = new FormData();
+  form.append('account_id', String(store.accountId));
+  // Гифку и голосовое отправляем без сжатия: сжатая гифка перестаёт
+  // быть гифкой, а голосовое — голосовым.
+  const raw = /\.(gif|ogg|oga|mp3|m4a|pdf)$/i.test(file.name);
+  form.append('as_file', raw ? '1' : '0');
+  form.append('file', file, file.name);
+
+  let result;
+  try {
+    const answer = await fetch('/api/material/upload', {
+      method: 'POST',
+      headers: { 'X-Init-Data': (tg && tg.initData) || '' },
+      body: form,
+    });
+    result = await answer.json();
+  } catch (error) {
+    result = { ok: false, error: 'Загрузка не дошла. Попробуйте ещё раз.' };
+  }
+  box.remove();
+
+  if (!result.ok) return alertBox(result.error);
+  picker.materials = result.materials || [];
+  store.attach[index] = result.msg_id;
+  rerender();
+  haptic('success');
 }
 
 /** Выбор материала — родным списком: в WebView он открывается
@@ -2454,6 +2543,11 @@ function wire() {
   $('admin-query').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') adminFind();
   });
+  $('paid-limit-save').onclick = (event) => savePaidLimit(event.currentTarget);
+  $('paid-limit').onkeydown = (event) => {
+    if (event.key === 'Enter') savePaidLimit($('paid-limit-save'));
+  };
+
   $('add-watch').onclick = () => openWatch(null);
   $('watch-save').onclick = (event) => saveWatch(event.currentTarget);
   $('watch-variant-add').onclick = () => {

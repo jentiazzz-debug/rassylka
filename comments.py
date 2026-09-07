@@ -130,7 +130,14 @@ async def _reply(client, watch: db.Watch, chat: db.Chat, post_id: int) -> None:
 
 
 async def _send(client, watch: db.Watch, chat: db.Chat, post_id: int) -> None:
-    """Одна попытка отправки — без повторов."""
+    """Одна попытка отправки — без повторов.
+
+    Группы обсуждений тоже бывают платными, и цена там берётся с самого
+    канала: комментарий уходит в связанный чат, но согласие на списание
+    Telegram спрашивает так же. Потолок общий с рассылкой — он про
+    аккаунт и кошелёк человека, а не про то, куда именно мы пишем.
+    """
+    stars = await broadcast.paid_check(watch.user_id, chat)
     items = await db.watch_variants(watch.id)
     if not items:
         raise RuntimeError("нет ни одного варианта ответа")
@@ -148,6 +155,11 @@ async def _send(client, watch: db.Watch, chat: db.Chat, post_id: int) -> None:
 
     if variant.get("content") != "saved" or not variant.get("saved_id"):
         text = await broadcast.compose(watch.user_id, variant.get("text") or "")
+        if stars:
+            await broadcast.send_paid(
+                client, peer, text, None, None, stars, comment_to=post_id
+            )
+            return
         await client.send_message(peer, text, comment_to=post_id, parse_mode=None)
         return
 
@@ -160,6 +172,11 @@ async def _send(client, watch: db.Watch, chat: db.Chat, post_id: int) -> None:
 
     if (getattr(source, "sticker", None) is not None
             or getattr(source, "video_note", None) is not None):
+        if stars:
+            await broadcast.send_paid(
+                client, peer, "", None, source.media, stars, comment_to=post_id
+            )
+            return
         await client.send_file(peer, source.media, comment_to=post_id)
         return
 
@@ -168,6 +185,12 @@ async def _send(client, watch: db.Watch, chat: db.Chat, post_id: int) -> None:
     caption = await broadcast.compose(watch.user_id, own or source.message or "")
 
     if source.media is not None:
+        if stars:
+            await broadcast.send_paid(
+                client, peer, caption, entities, source.media, stars,
+                comment_to=post_id,
+            )
+            return
         await client.send_file(
             peer,
             source.media,
@@ -175,6 +198,12 @@ async def _send(client, watch: db.Watch, chat: db.Chat, post_id: int) -> None:
             formatting_entities=entities,
             comment_to=post_id,
             parse_mode=None,
+        )
+        return
+
+    if stars:
+        await broadcast.send_paid(
+            client, peer, caption, entities, None, stars, comment_to=post_id
         )
         return
 
@@ -259,6 +288,15 @@ async def run_one(bot, watch: db.Watch, post_id: int | None = None) -> None:
     try:
         async with live.lock:
             await _reply(live.client, watch, chat, post_id)
+    except broadcast.TooExpensive as error:
+        await db.set_watch_status(
+            watch.id, "paused",
+            f"платный чат: {error.stars} звёзд за сообщение",
+        )
+        await broadcast._notify(
+            bot, watch.user_id, texts.watch_too_expensive(watch, error.stars)
+        )
+        return
     except broadcast.MaterialGone:
         await db.set_watch_status(
             watch.id, "paused", "материал пропал из «Избранного»"

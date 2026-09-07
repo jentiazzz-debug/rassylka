@@ -236,6 +236,23 @@
       </div>
     </div>
 
+    <h2 class="section-title">Платные чаты</h2>
+    <div class="panel">
+      <div class="row own">
+        <input class="field own-input" id="paid-limit" type="number"
+               inputmode="numeric" min="0" placeholder="0 — не писать">
+        <button class="btn small own-apply" id="paid-limit-save">Ок</button>
+      </div>
+    </div>
+    <p class="hint small pad">
+      Часть групп берёт звёзды за каждое сообщение. Здесь потолок: чат
+      дороже — рассылка его пропустит и напишет об этом в журнале.
+      <b>0 — не писать в платные вовсе.</b>
+      <br><br>
+      Звёзды списываются с самого подключённого аккаунта, а не с баланса
+      в боте: это ваши деньги, и тратить их молча нельзя.
+    </p>
+
     <h2 class="section-title">Подписка за монеты</h2>
     <div class="panel" id="plans"></div>
     <p class="hint small pad">

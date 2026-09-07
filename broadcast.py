@@ -202,6 +202,70 @@ class MaterialGone(Exception):
     """Сообщение-материал пропало из «Избранного»."""
 
 
+class TooExpensive(Exception):
+    """Чат берёт за сообщение больше, чем человек готов платить."""
+
+    def __init__(self, stars: int, limit: int):
+        super().__init__(f"{stars} звёзд за сообщение, потолок {limit}")
+        self.stars = stars
+        self.limit = limit
+
+
+async def paid_check(user_id: int, chat: db.Chat) -> int:
+    """Сколько звёзд заплатим за сообщение в этот чат.
+
+    Ноль — чат бесплатный. Исключение — цена выше того, что человек
+    разрешил: звёзды списываются с его подключённого аккаунта, и тратить
+    их молча нельзя. Потолок по умолчанию нулевой, то есть в платные
+    чаты мы не пишем, пока это не разрешат явно.
+    """
+    stars = int(chat.paid_stars or 0)
+    if stars <= 0:
+        return 0
+    limit = await db.paid_max_stars(user_id)
+    if stars > limit:
+        raise TooExpensive(stars, limit)
+    return stars
+
+
+async def send_paid(client, peer, text: str, entities, media, stars: int,
+                    comment_to: int | None = None):
+    """Отправить сообщение, согласившись заплатить звёздами.
+
+    Собирается вручную, потому что высокоуровневые `send_message` и
+    `send_file` у Telethon про `allow_paid_stars` не знают — флаг есть
+    только в самих запросах. Ради платных чатов дублировать всю сборку
+    сообщения не хочется, поэтому обычная отправка осталась как была, а
+    этот путь включается только там, где за сообщение просят денег.
+    """
+    import random as _random
+
+    from telethon import utils as _utils
+    from telethon.tl import functions
+
+    reply_to = None
+    if comment_to is not None:
+        peer, reply_to = await client._get_comment_data(peer, comment_to)
+
+    common = {
+        "peer": peer,
+        "message": text or "",
+        "random_id": _random.randrange(-(2 ** 63), 2 ** 63),
+        "entities": list(entities) if entities else None,
+        "allow_paid_stars": stars,
+    }
+    if reply_to is not None:
+        common["reply_to"] = reply_to
+
+    if media is None:
+        return await client(functions.messages.SendMessageRequest(
+            no_webpage=True, **common
+        ))
+    return await client(functions.messages.SendMediaRequest(
+        media=_utils.get_input_media(media), **common
+    ))
+
+
 async def pick_variant(campaign: db.Campaign) -> dict:
     """Какой из вариантов сообщения отправить сейчас.
 
@@ -224,7 +288,7 @@ async def pick_variant(campaign: db.Campaign) -> dict:
     return random.choice(items)
 
 
-async def _deliver(client, campaign: db.Campaign, peer) -> None:
+async def _deliver(client, campaign: db.Campaign, chat: db.Chat) -> None:
     """Отправить в чат то, что задано рассылкой.
 
     Материал — это сообщение из «Избранного» аккаунта, и отправляется он
@@ -240,14 +304,25 @@ async def _deliver(client, campaign: db.Campaign, peer) -> None:
     расточительности: у файлов есть file_reference, он живёт считанные
     часы, и сохранённая ссылка на медиа через сутки перестаёт работать.
     Свежее чтение выдаёт свежую ссылку.
+
+    Отдельная ветка — платные чаты. Там за каждое сообщение списываются
+    звёзды с самого подключённого аккаунта, и согласие на списание надо
+    передать в запросе. Высокоуровневые методы Telethon про этот флаг не
+    знают, поэтому такие сообщения собираются вручную; обычная отправка
+    осталась как была.
     """
     variant = await pick_variant(campaign)
+    stars = await paid_check(campaign.user_id, chat)
+    peer = _input_peer(chat)
 
     if variant.get("content") != "saved" or not variant.get("saved_id"):
         # parse_mode=None намеренно: текст пишут в обычное поле, и
         # звёздочки с подчёркиваниями в нём должны остаться собой, а не
         # превратиться в разметку или сломать отправку.
         text = await compose(campaign.user_id, variant.get("text") or "")
+        if stars:
+            await send_paid(client, peer, text, None, None, stars)
+            return
         await client.send_message(peer, text, parse_mode=None)
         return
 
@@ -260,6 +335,9 @@ async def _deliver(client, campaign: db.Campaign, peer) -> None:
         # У стикера и кружка подписи не бывает — Telegram её не примет.
         # Значит, и подпись бесплатного тарифа к ним не пристаёт:
         # рассылка одними стикерами уходит без неё.
+        if stars:
+            await send_paid(client, peer, "", None, source.media, stars)
+            return
         await client.send_file(peer, source.media)
         return
 
@@ -275,6 +353,9 @@ async def _deliver(client, campaign: db.Campaign, peer) -> None:
         # Медиа переотправляется тем же объектом, без скачивания и
         # повторной загрузки: файл уже лежит у Telegram, и аккаунт имеет
         # к нему доступ — он же его туда и положил.
+        if stars:
+            await send_paid(client, peer, caption, entities, source.media, stars)
+            return
         await client.send_file(
             peer,
             source.media,
@@ -282,6 +363,10 @@ async def _deliver(client, campaign: db.Campaign, peer) -> None:
             formatting_entities=entities,
             parse_mode=None,
         )
+        return
+
+    if stars:
+        await send_paid(client, peer, caption, entities, None, stars)
         return
 
     await client.send_message(
@@ -463,7 +548,7 @@ async def run_one(bot, campaign: db.Campaign) -> None:
     live = await _live(account)
     try:
         async with live.lock:
-            await _deliver(live.client, campaign, _input_peer(chat))
+            await _deliver(live.client, campaign, chat)
     except Exception as error:
         await _handle_error(bot, campaign, account, chat, error, len(targets))
         return
@@ -484,6 +569,17 @@ async def _handle_error(
     error: Exception,
     total: int,
 ) -> None:
+    if isinstance(error, TooExpensive):
+        # Не отказ Telegram, а наше собственное решение: чат просит
+        # больше, чем человек разрешил тратить. Круг едет дальше, а в
+        # журнале остаётся цена — по ней и видно, поднимать ли потолок.
+        await db.log_send(
+            campaign.id, account.id, chat.chat_id, chat.title, False,
+            f"платный чат: {error.stars} звёзд за сообщение",
+        )
+        await _advance(campaign, total, ok=False)
+        return
+
     if isinstance(error, MaterialGone):
         # Материал удалили из «Избранного». Круг продолжать нельзя: он
         # будет спотыкаться на каждом чате и копить ошибки.
