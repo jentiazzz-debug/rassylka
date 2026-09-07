@@ -518,6 +518,7 @@ async def _handle_error(
         # Продолжать — значит идти к блокировке номера.
         await db.pause_account(account.id, now + 86400, reason)
         stopped = await db.stop_account_campaigns(account.id, reason)
+        await db.stop_account_watches(account.id, reason)
         log.warning("аккаунт %s: PeerFlood, остановлено рассылок %s",
                     account.title, stopped)
         await _notify(bot, campaign.user_id, texts.peer_flood(account.title))
@@ -526,6 +527,7 @@ async def _handle_error(
     if action == "dead":
         await db.mark_account(account.id, "dead", reason)
         await db.stop_account_campaigns(account.id, reason)
+        await db.stop_account_watches(account.id, reason)
         await _close(account.id)
         await _notify(bot, campaign.user_id, texts.campaign_account_dead(campaign))
         return

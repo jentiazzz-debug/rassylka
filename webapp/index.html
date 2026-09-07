@@ -276,6 +276,18 @@
     </p>
     <button id="add-campaign" class="btn primary">Новая рассылка</button>
     <p id="campaign-note" class="hint center" hidden></p>
+
+    <!-- Автокомментарии живут в том же разделе, что и рассылки: это
+         тоже «что аккаунт пишет сам», просто повод другой. Отдельная
+         вкладка ради одного списка была бы лишней. -->
+    <h2 class="section-title">Комментарии под постами</h2>
+    <div class="panel" id="watches"></div>
+    <p id="watches-empty" class="hint pad" hidden>
+      Аккаунт может отвечать под каждым новым постом канала — в его
+      группе обсуждений. Удобно для раздач: комментарий появляется сразу
+      после поста, без вашего участия.
+    </p>
+    <button id="add-watch" class="btn ghost">Новый автокомментарий</button>
   </div>
 
   <!-- Аккаунты. -->
@@ -447,6 +459,64 @@
   <!-- Правка уже созданной рассылки. Чаты не трогаем: круг идёт, и
        менять список на ходу — значит писать в одни чаты дважды, а другие
        пропустить. -->
+  <!-- Автокомментарий. Форма короче, чем у рассылки, и шагов ей не
+       нужно: канал один, сообщение одно, задержка одна. -->
+  <section id="screen-watch" class="screen" hidden>
+    <h2 class="section-title" id="watch-head">Новый автокомментарий</h2>
+
+    <div id="watch-channel-box">
+      <p class="hint pad">
+        Канал, под постами которого отвечать. В списке только каналы —
+        комментарии бывают под их постами, а не в группах.
+      </p>
+      <div id="watch-channels" class="picker"></div>
+      <p class="hint small pad">
+        Аккаунт должен состоять в группе обсуждений этого канала: зайдите
+        с него в комментарии под любым постом и вступите. Без этого
+        Telegram не даст написать, и наблюдение встанет.
+      </p>
+    </div>
+
+    <div id="watch-title" class="panel row" hidden></div>
+
+    <h2 class="section-title">Что отвечать</h2>
+    <div class="panel" id="watch-variants"></div>
+    <button id="watch-variant-add" class="btn ghost">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-plus"/></svg>
+      Ещё вариант ответа
+    </button>
+    <p class="hint small pad">
+      Один и тот же текст под каждым постом заметен так же, как одна и
+      та же рассылка по чатам. Несколько вариантов вперемешку — нет.
+    </p>
+
+    <div class="tabs" id="watch-pick">
+      <button class="wtab active" data-pick="random">Вперемешку</button>
+      <button class="wtab" data-pick="order">По очереди</button>
+    </div>
+
+    <h2 class="section-title">Через сколько отвечать</h2>
+    <div class="panel">
+      <div class="row own">
+        <input class="field own-input" id="watch-delay-min" type="number"
+               inputmode="numeric" placeholder="от, сек">
+        <input class="field own-input" id="watch-delay-max" type="number"
+               inputmode="numeric" placeholder="до, сек">
+      </div>
+    </div>
+    <p class="hint small pad">
+      Ответ уходит через случайное время в этой вилке. Комментарий
+      через полсекунды после поста не пишет ни один человек — это первое,
+      за что комментатора считают роботом.
+    </p>
+
+    <p id="watch-err" class="err pad" hidden></p>
+    <div class="nav-row">
+      <button class="btn ghost" data-home>Отмена</button>
+      <button id="watch-save" class="btn primary">Включить</button>
+    </div>
+  </section>
+
   <section id="screen-edit" class="screen" hidden>
     <h2 class="section-title">Изменить рассылку</h2>
     <p class="hint pad" id="edit-about"></p>

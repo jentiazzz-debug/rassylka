@@ -45,6 +45,7 @@ import accounts  # noqa: E402  — только после подмены пут
 import admin  # noqa: E402
 import broadcast  # noqa: E402
 import chats  # noqa: E402
+import comments  # noqa: E402
 import crypto  # noqa: E402
 import cryptobot  # noqa: E402
 import db  # noqa: E402
@@ -1904,6 +1905,92 @@ async def check_attached_media() -> None:
           and "return packVariants(draft);" in js)
 
 
+async def check_watches() -> None:
+    print("\nАвтокомментарии под постами")
+    account_id = await db.save_account(
+        USER, "+79990000500", crypto.encrypt("s"), tg_id=50,
+        name="Комментатор", username=None,
+    )
+    await db.save_chats(account_id, [
+        {"chat_id": -2001, "raw_id": 2001, "access_hash": 11, "kind": "channel",
+         "broadcast": True, "title": "Канал с раздачами", "username": None},
+    ])
+
+    watch_id = await db.create_watch(
+        USER, account_id, -2001, "Канал с раздачами",
+        last_msg_id=500, delay_min=30, delay_max=120, pick="order",
+    )
+    await db.set_watch_variants(watch_id, [
+        {"content": "text", "text": "Участвую!"},
+        {"content": "saved", "text": "Спасибо", "saved_id": 501},
+    ])
+
+    watch = await db.watch(USER, watch_id)
+    check("наблюдение завелось", watch is not None and watch.chat_id == -2001)
+    check("точка отсчёта — текущий пост",
+          watch.last_msg_id == 500, str(watch.last_msg_id))
+
+    items = await db.watch_variants(watch_id)
+    check("варианты ответа записались", len(items) == 2, str(items))
+    check("подпись к материалу сохранилась",
+          items[1]["saved_id"] == 501 and items[1]["text"] == "Спасибо",
+          str(items[1]))
+
+    # Отметка двигается и при ошибке: пост, на который ответить не вышло,
+    # иначе застрял бы в очереди навсегда и закрыл собой все следующие.
+    await db.mark_watch_seen(watch_id, 501, ok=False)
+    after = await db.watch(USER, watch_id)
+    check("после ошибки отметка сдвинулась", after.last_msg_id == 501)
+    check("ошибка посчиталась", after.sent_err == 1, str(after.sent_err))
+    await db.mark_watch_seen(watch_id, 502, ok=True)
+    after = await db.watch(USER, watch_id)
+    check("ответ посчитался", after.sent_ok == 1, str(after.sent_ok))
+
+    # Очередь на выполнение.
+    await db.reschedule_watch(watch_id, int(time.time()) - 1)
+    due = await db.due_watches(int(time.time()))
+    check("наблюдение попадает в очередь",
+          any(w.id == watch_id for w in due), str([w.id for w in due]))
+    await db.set_watch_status(watch_id, "paused", "руками")
+    due = await db.due_watches(int(time.time()))
+    check("на паузе очередь его не берёт",
+          not any(w.id == watch_id for w in due))
+    await db.set_watch_status(watch_id, "running", None)
+
+    # Задержка — всегда внутри вилки и не ниже общей планки.
+    fresh = await db.watch(USER, watch_id)
+    delays = {comments._delay(fresh) for _ in range(40)}
+    check("задержка внутри вилки",
+          all(fresh.delay_min <= d <= fresh.delay_max for d in delays),
+          str(sorted(delays)[:5]))
+    check("задержка не всегда одна и та же", len(delays) > 1, str(delays))
+
+    import dataclasses
+
+    tight = dataclasses.replace(fresh, delay_min=0, delay_max=0)
+    check("ниже общей планки задержка не опускается",
+          comments._delay(tight) >= config.COMMENT_MIN_DELAY,
+          str(comments._delay(tight)))
+
+    # Мёртвый аккаунт уносит и наблюдения: писать всё равно нечем.
+    stopped = await db.stop_account_watches(account_id, "сессия отозвана")
+    check("наблюдения останавливаются вместе с аккаунтом", stopped == 1,
+          str(stopped))
+    check("и причина записана",
+          (await db.watch(USER, watch_id)).note == "сессия отозвана")
+
+    # Удаление уносит и варианты.
+    check("наблюдение удаляется", await db.delete_watch(USER, watch_id))
+    rest = await db._fetchall(
+        "SELECT 1 FROM watch_texts WHERE watch_id = ?", (watch_id,)
+    )
+    check("варианты ответа удалились вместе с ним", not rest, str(len(rest)))
+    check("чужое наблюдение не удалить",
+          not await db.delete_watch(OTHER, watch_id))
+
+    await db.delete_account(USER, account_id)
+
+
 async def check_joins() -> None:
     print("\nПодписка на чаты с ОП")
     account_id = await db.save_account(
@@ -2023,6 +2110,10 @@ def check_wiring() -> None:
         "POST /api/account/forget",
         "POST /api/invoice/crypto",
         "POST /api/invoice/xrocket",
+        "POST /api/watch/create",
+        "POST /api/watch/edit",
+        "POST /api/watch/toggle",
+        "POST /api/watch/delete",
     ):
         check(f"есть ручка {need}", need in routes, str(sorted(routes)))
 
@@ -2057,6 +2148,7 @@ async def run() -> None:
         await check_platega()
         await check_variants()
         await check_attached_media()
+        await check_watches()
         await check_joins()
         await check_footer_on_media()
         await check_api()

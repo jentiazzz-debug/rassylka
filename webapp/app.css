@@ -585,7 +585,7 @@ input[type="file"].field::file-selector-button {
   border-radius: var(--radius-s);
   background: var(--accent-soft);
 }
-.tab, .ptab, .etab {
+.tab, .ptab, .etab, .wtab {
   flex: 1;
   padding: 9px 12px;
   border: 0;
@@ -598,7 +598,7 @@ input[type="file"].field::file-selector-button {
   cursor: pointer;
   transition: background .16s ease, color .16s ease;
 }
-.tab.active, .ptab.active, .etab.active {
+.tab.active, .ptab.active, .etab.active, .wtab.active {
   background: #fff;
   color: var(--ink);
   font-weight: 600;

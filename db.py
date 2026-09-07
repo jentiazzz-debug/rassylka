@@ -111,6 +111,53 @@ CREATE TABLE IF NOT EXISTS folders (
     PRIMARY KEY (account_id, folder_id)
 );
 
+-- Автокомментарий: аккаунт отвечает под новыми постами канала в его
+-- группе обсуждений. Отдельно от campaigns намеренно: у рассылки круг по
+-- чатам с курсором и интервалом, здесь же нет ни круга, ни расписания —
+-- есть событие (вышел пост) и реакция на него. Сведение этих двух вещей
+-- в одну таблицу дало бы поля, которые у половины строк не значат ничего.
+CREATE TABLE IF NOT EXISTS watches (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    account_id  INTEGER NOT NULL,
+    -- Канал, за постами которого следим.
+    chat_id     INTEGER NOT NULL,
+    title       TEXT,
+    -- Последний пост, который мы уже видели. При создании ставится
+    -- текущий: отвечать задним числом на старые посты незачем.
+    last_msg_id INTEGER NOT NULL DEFAULT 0,
+    -- Через сколько секунд после поста отвечать. Разброс между этими
+    -- двумя: ответ через ровно N секунд — признак робота.
+    delay_min   INTEGER NOT NULL DEFAULT 30,
+    delay_max   INTEGER NOT NULL DEFAULT 120,
+    -- order — варианты по очереди, random — вразнобой.
+    pick        TEXT    NOT NULL DEFAULT 'random',
+    text_cursor INTEGER NOT NULL DEFAULT 0,
+    status      TEXT    NOT NULL DEFAULT 'running',
+    -- Когда в следующий раз заглянуть в канал.
+    next_run_at INTEGER NOT NULL DEFAULT 0,
+    sent_ok     INTEGER NOT NULL DEFAULT 0,
+    sent_err    INTEGER NOT NULL DEFAULT 0,
+    note        TEXT,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_watches_user ON watches(user_id);
+CREATE INDEX IF NOT EXISTS idx_watches_due ON watches(status, next_run_at);
+
+-- Варианты ответа. Та же форма, что у вариантов рассылки: текст, медиа
+-- из «Избранного» или то и другое вместе.
+CREATE TABLE IF NOT EXISTS watch_texts (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    watch_id  INTEGER NOT NULL,
+    position  INTEGER NOT NULL DEFAULT 0,
+    content   TEXT    NOT NULL DEFAULT 'text',
+    text      TEXT    NOT NULL DEFAULT '',
+    saved_id  INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_watch_texts ON watch_texts(watch_id, position);
+
 CREATE TABLE IF NOT EXISTS campaigns (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL,
@@ -1021,6 +1068,193 @@ def _campaign(row: aiosqlite.Row) -> Campaign:
         note=row["note"],
         created_at=row["created_at"],
     )
+
+
+@dataclass(slots=True)
+class Watch:
+    """Наблюдение за каналом: под каждый новый пост — один ответ."""
+
+    id: int
+    user_id: int
+    account_id: int
+    chat_id: int
+    title: str
+    last_msg_id: int
+    delay_min: int
+    delay_max: int
+    pick: str
+    text_cursor: int
+    status: str
+    next_run_at: int
+    sent_ok: int
+    sent_err: int
+    note: str
+
+
+def _watch(row: aiosqlite.Row) -> Watch:
+    return Watch(
+        id=row["id"],
+        user_id=row["user_id"],
+        account_id=row["account_id"],
+        chat_id=row["chat_id"],
+        title=row["title"] or "",
+        last_msg_id=row["last_msg_id"],
+        delay_min=row["delay_min"],
+        delay_max=row["delay_max"],
+        pick=row["pick"],
+        text_cursor=row["text_cursor"],
+        status=row["status"],
+        next_run_at=row["next_run_at"],
+        sent_ok=row["sent_ok"],
+        sent_err=row["sent_err"],
+        note=row["note"] or "",
+    )
+
+
+async def create_watch(user_id: int, account_id: int, chat_id: int, title: str,
+                       last_msg_id: int, delay_min: int, delay_max: int,
+                       pick: str = "random") -> int:
+    cursor = await _conn().execute(
+        "INSERT INTO watches (user_id, account_id, chat_id, title, "
+        "last_msg_id, delay_min, delay_max, pick, next_run_at, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, account_id, chat_id, title, last_msg_id, delay_min,
+         delay_max, pick, int(time.time()), int(time.time())),
+    )
+    await _conn().commit()
+    return int(cursor.lastrowid)
+
+
+async def watches(user_id: int) -> list[Watch]:
+    rows = await _fetchall(
+        "SELECT * FROM watches WHERE user_id = ? ORDER BY id DESC", (user_id,)
+    )
+    return [_watch(row) for row in rows]
+
+
+async def watch(user_id: int, watch_id: int) -> Watch | None:
+    row = await _fetchone(
+        "SELECT * FROM watches WHERE id = ? AND user_id = ?", (watch_id, user_id)
+    )
+    return _watch(row) if row else None
+
+
+async def due_watches(now: int) -> list[Watch]:
+    rows = await _fetchall(
+        "SELECT * FROM watches WHERE status = 'running' AND next_run_at <= ? "
+        "ORDER BY next_run_at",
+        (now,),
+    )
+    return [_watch(row) for row in rows]
+
+
+async def count_watches(user_id: int) -> int:
+    row = await _fetchone(
+        "SELECT COUNT(*) AS n FROM watches WHERE user_id = ?", (user_id,)
+    )
+    return int(row["n"]) if row else 0
+
+
+async def set_watch_variants(watch_id: int, variants: list[dict]) -> None:
+    await _conn().execute(
+        "DELETE FROM watch_texts WHERE watch_id = ?", (watch_id,)
+    )
+    await _conn().executemany(
+        "INSERT INTO watch_texts (watch_id, position, content, text, saved_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [
+            (watch_id, position, item.get("content") or "text",
+             item.get("text") or "", item.get("saved_id"))
+            for position, item in enumerate(variants)
+        ],
+    )
+    await _conn().commit()
+
+
+async def watch_variants(watch_id: int) -> list[dict]:
+    rows = await _fetchall(
+        "SELECT content, text, saved_id FROM watch_texts "
+        "WHERE watch_id = ? ORDER BY position",
+        (watch_id,),
+    )
+    return [
+        {"content": row["content"], "text": row["text"] or "",
+         "saved_id": row["saved_id"]}
+        for row in rows
+    ]
+
+
+async def set_watch_cursor(watch_id: int, cursor: int) -> None:
+    await _conn().execute(
+        "UPDATE watches SET text_cursor = ? WHERE id = ?", (cursor, watch_id)
+    )
+    await _conn().commit()
+
+
+async def reschedule_watch(watch_id: int, next_run_at: int) -> None:
+    await _conn().execute(
+        "UPDATE watches SET next_run_at = ? WHERE id = ?",
+        (next_run_at, watch_id),
+    )
+    await _conn().commit()
+
+
+async def set_watch_status(watch_id: int, status: str,
+                           note: str | None = None) -> None:
+    await _conn().execute(
+        "UPDATE watches SET status = ?, note = ? WHERE id = ?",
+        (status, note, watch_id),
+    )
+    await _conn().commit()
+
+
+async def mark_watch_seen(watch_id: int, last_msg_id: int, ok: bool) -> None:
+    """Пост обработан: сдвинуть отметку и посчитать результат.
+
+    Отметка сдвигается и при ошибке — иначе один пост, на который
+    ответить не вышло, задержал бы всю очередь навсегда.
+    """
+    column = "sent_ok" if ok else "sent_err"
+    await _conn().execute(
+        f"UPDATE watches SET last_msg_id = ?, {column} = {column} + 1 "
+        "WHERE id = ?",
+        (last_msg_id, watch_id),
+    )
+    await _conn().commit()
+
+
+async def edit_watch(user_id: int, watch_id: int, title: str, delay_min: int,
+                     delay_max: int, pick: str) -> bool:
+    cursor = await _conn().execute(
+        "UPDATE watches SET title = ?, delay_min = ?, delay_max = ?, pick = ? "
+        "WHERE id = ? AND user_id = ?",
+        (title, delay_min, delay_max, pick, watch_id, user_id),
+    )
+    await _conn().commit()
+    return cursor.rowcount > 0
+
+
+async def delete_watch(user_id: int, watch_id: int) -> bool:
+    cursor = await _conn().execute(
+        "DELETE FROM watches WHERE id = ? AND user_id = ?", (watch_id, user_id)
+    )
+    await _conn().commit()
+    if cursor.rowcount:
+        await _conn().execute(
+            "DELETE FROM watch_texts WHERE watch_id = ?", (watch_id,)
+        )
+        await _conn().commit()
+    return cursor.rowcount > 0
+
+
+async def stop_account_watches(account_id: int, note: str) -> int:
+    cursor = await _conn().execute(
+        "UPDATE watches SET status = 'stopped', note = ? "
+        "WHERE account_id = ? AND status != 'stopped'",
+        (note, account_id),
+    )
+    await _conn().commit()
+    return cursor.rowcount
 
 
 async def create_campaign(

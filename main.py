@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram import __version__ as aiogram_version
@@ -21,6 +22,7 @@ from aiogram.types import BotCommand, BotCommandScopeChat
 import accounts
 import admin
 import broadcast
+import comments
 import config
 import crypto
 import db
@@ -86,7 +88,16 @@ async def run() -> None:
     webapp.use_bot(bot)
 
     me = await bot.me()
-    log.info("запущен как @%s, aiogram %s", me.username, aiogram_version)
+    # Версии в лог не для красоты: вход по номеру ломается от версии
+    # Telethon, и первое, что нужно знать при разборе такого отказа, —
+    # какая из них стоит на этом сервере.
+    import telethon
+
+    log.info(
+        "запущен как @%s, aiogram %s, telethon %s, python %s",
+        me.username, aiogram_version, telethon.__version__,
+        sys.version.split()[0],
+    )
 
     await bot.set_my_commands(
         [BotCommand(command=c, description=d) for c, d in COMMANDS]
@@ -122,10 +133,14 @@ async def run() -> None:
     # передеплой, упавший процесс. Человек в этом случае заплатил, а
     # монет не увидел, и пойдёт в поддержку.
     invoices = asyncio.create_task(platega.worker(bot), name="invoices")
+    # Автокомментарии — свой воркер, а не ветка в движке рассылки: у
+    # рассылки расписание, здесь событие, и общий цикл пришлось бы
+    # будить с частотой самого нетерпеливого из двух.
+    watcher = asyncio.create_task(comments.worker(bot), name="comments")
     try:
         await dispatcher.start_polling(bot)
     finally:
-        for task in (sweeper, sender, invoices):
+        for task in (sweeper, sender, invoices, watcher):
             task.cancel()
             try:
                 await task

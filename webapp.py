@@ -30,6 +30,7 @@ from aiohttp import web
 import accounts
 import broadcast
 import chats
+import comments
 import config
 import cryptobot
 import xrocket
@@ -213,12 +214,15 @@ async def _state(user_id: int) -> dict:
         "campaigns": [
             await _campaign_view(c) for c in await db.campaigns(user_id)
         ],
+        "watches": await _watch_cards(user_id),
         "limits": {
             "max_accounts": config.MAX_ACCOUNTS,
             "trial_days": config.TRIAL_DAYS,
             "min_interval": config.MIN_INTERVAL,
             "daily_limit": config.DAILY_LIMIT,
             "max_text": config.MAX_TEXT,
+            "max_watches": config.MAX_WATCHES,
+            "comment_min_delay": config.COMMENT_MIN_DELAY,
             "max_variants": config.MAX_VARIANTS,
         },
         "support_url": config.SUPPORT_URL,
@@ -633,6 +637,10 @@ async def api_chats(request: web.Request, user: dict, data: dict) -> web.Respons
                         if chat.broadcast
                         else "user" if chat.kind == "user" else "group"
                     ),
+                    # Отдельным полем, а не выводом из kind: под постами
+                    # комментируют только каналы, и приложению нужно
+                    # отличать их без разбора строк.
+                    "broadcast": bool(chat.broadcast),
                 }
                 for chat in found
             ],
@@ -714,6 +722,160 @@ def _variants(data: dict, known_materials: dict[int, str]) -> tuple[list[dict], 
     if not out:
         return [], "Добавьте хотя бы одно сообщение."
     return out, ""
+
+
+def _watch_card(watch: db.Watch, variants: list[dict]) -> dict:
+    return {
+        "id": watch.id,
+        "account_id": watch.account_id,
+        "chat_id": watch.chat_id,
+        "title": watch.title,
+        "delay_min": watch.delay_min,
+        "delay_max": watch.delay_max,
+        "pick": watch.pick,
+        "variants": variants,
+        "status": watch.status,
+        "sent_ok": watch.sent_ok,
+        "sent_err": watch.sent_err,
+        "note": watch.note,
+    }
+
+
+async def _watch_cards(user_id: int) -> list[dict]:
+    return [
+        _watch_card(watch, await db.watch_variants(watch.id))
+        for watch in await db.watches(user_id)
+    ]
+
+
+async def _watch_form(user: dict, data: dict) -> tuple[dict, str]:
+    """Разобрать общее для создания и правки: задержка, порядок, тексты."""
+    account = await db.account(int(user["id"]), _int(data.get("account_id")))
+    if account is None:
+        return {}, "Выберите аккаунт."
+    if account.status != "ok":
+        return {}, "Этот аккаунт не в сети — подключите его заново."
+
+    known = {m["msg_id"]: m["kind"] for m in await db.materials(account.id)}
+    variants, error = _variants(data, known)
+    if error:
+        return {}, error
+
+    low = _int(data.get("delay_min"))
+    high = _int(data.get("delay_max"))
+    if low < config.COMMENT_MIN_DELAY:
+        # Планка не техническая, а защитная: комментарий через полсекунды
+        # после поста не пишет ни один человек.
+        return {}, (
+            f"Задержка меньше {config.COMMENT_MIN_DELAY} с — так "
+            "комментарий выглядит роботом. Поставьте больше."
+        )
+    if high < low:
+        high = low
+
+    pick = "order" if data.get("pick") == "order" else "random"
+    return {
+        "account": account,
+        "variants": variants,
+        "delay_min": low,
+        "delay_max": high,
+        "pick": pick,
+    }, ""
+
+
+@authed
+async def api_watch_create(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    user_id = int(user["id"])
+
+    subscription = await db.subscription(user_id)
+    if not subscription.active:
+        return _fail(
+            "Бесплатный период закончился — новые автокомментарии не "
+            "создаются. Напишите в поддержку."
+        )
+    if await db.count_watches(user_id) >= config.MAX_WATCHES:
+        return _fail(f"Больше {config.MAX_WATCHES} наблюдений не завести.")
+
+    form, error = await _watch_form(user, data)
+    if error:
+        return _fail(error)
+    account = form["account"]
+
+    chat_id = _int(data.get("chat_id"))
+    found = await db.chats_by_ids(account.id, [chat_id])
+    if not found:
+        return _fail("Выберите канал из списка.")
+    chat = found[0]
+    if not chat.broadcast:
+        # Комментарии бывают только под постами канала: в обычной группе
+        # комментировать нечего.
+        return _fail("Это не канал. Комментарии бывают под постами каналов.")
+
+    # Точка отсчёта — сейчас: отвечать задним числом на посты, которые
+    # вышли до того, как человек это включил, никто не просил.
+    try:
+        last_id = await comments.newest_post(account, chat)
+    except Exception as error:
+        log.exception("не прочитался канал %s", chat_id)
+        return _fail(f"Не удалось прочитать канал: {type(error).__name__}")
+
+    watch_id = await db.create_watch(
+        user_id, account.id, chat.chat_id, chat.title or "канал",
+        last_id, form["delay_min"], form["delay_max"], form["pick"],
+    )
+    await db.set_watch_variants(watch_id, form["variants"])
+    log.info("автокомментарий %s заведён на «%s»", watch_id, chat.title)
+    return web.json_response({"ok": True, "watches": await _watch_cards(user_id)})
+
+
+@authed
+async def api_watch_edit(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    user_id = int(user["id"])
+    watch = await db.watch(user_id, _int(data.get("watch_id")))
+    if watch is None:
+        return _fail("Наблюдение не найдено.")
+
+    data = {**data, "account_id": watch.account_id}
+    form, error = await _watch_form(user, data)
+    if error:
+        return _fail(error)
+
+    await db.edit_watch(
+        user_id, watch.id, watch.title,
+        form["delay_min"], form["delay_max"], form["pick"],
+    )
+    await db.set_watch_variants(watch.id, form["variants"])
+    return web.json_response({"ok": True, "watches": await _watch_cards(user_id)})
+
+
+@authed
+async def api_watch_toggle(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    user_id = int(user["id"])
+    watch = await db.watch(user_id, _int(data.get("watch_id")))
+    if watch is None:
+        return _fail("Наблюдение не найдено.")
+    if watch.status == "running":
+        await db.set_watch_status(watch.id, "paused", "остановлено вручную")
+    else:
+        await db.set_watch_status(watch.id, "running", None)
+        await db.reschedule_watch(watch.id, int(time.time()))
+    return web.json_response({"ok": True, "watches": await _watch_cards(user_id)})
+
+
+@authed
+async def api_watch_delete(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    user_id = int(user["id"])
+    if not await db.delete_watch(user_id, _int(data.get("watch_id"))):
+        return _fail("Наблюдение не найдено.")
+    return web.json_response({"ok": True, "watches": await _watch_cards(user_id)})
 
 
 @authed
@@ -1218,6 +1380,10 @@ def build() -> web.Application:
             web.post("/api/materials", api_materials),
             web.post("/api/chats", api_chats),
             web.post("/api/chats/scan", api_chats_scan),
+            web.post("/api/watch/create", api_watch_create),
+            web.post("/api/watch/edit", api_watch_edit),
+            web.post("/api/watch/toggle", api_watch_toggle),
+            web.post("/api/watch/delete", api_watch_delete),
             web.post("/api/campaign/create", api_campaign_create),
             web.post("/api/campaign/edit", api_campaign_edit),
             web.post("/api/campaign/toggle", api_campaign_toggle),

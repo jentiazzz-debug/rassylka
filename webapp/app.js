@@ -35,7 +35,7 @@ function icon(name, cls) {
 
 const SCREENS = [
   'loading', 'main', 'phone', 'code', 'password', 'done', 'tdata', 'new',
-  'edit', 'log', 'topup', 'outside',
+  'edit', 'log', 'topup', 'watch', 'outside',
 ];
 
 /** Разделы главного экрана. */
@@ -913,6 +913,7 @@ function renderMain() {
   renderSubscription();
   renderAccounts();
   renderCampaigns();
+  renderWatches();
   renderProfile();
   setPane(pane);
   show('main');
@@ -1374,6 +1375,236 @@ function jumpStep(index) {
   }
   goStep(index);
 }
+
+// --- автокомментарии под постами ---------------------------------------
+
+/** Что сейчас редактируется: новое наблюдение или существующее. */
+let watching = null;
+
+function renderWatches() {
+  const box = $('watches');
+  const list = state.watches || [];
+  box.textContent = '';
+  $('watches-empty').hidden = list.length > 0;
+
+  for (const watch of list) {
+    const card = document.createElement('div');
+    card.className = 'campaign';
+
+    const top = document.createElement('div');
+    top.className = 'campaign-top';
+    const name = document.createElement('span');
+    name.className = 'campaign-name';
+    name.textContent = watch.title;
+    top.appendChild(name);
+    top.appendChild(watchBadge(watch));
+    card.appendChild(top);
+
+    const what = document.createElement('div');
+    what.className = 'campaign-text';
+    const first = (watch.variants || [])[0] || {};
+    what.textContent = (first.text || '').trim()
+      || (first.saved_id ? 'сообщение из «Избранного»' : '—');
+    card.appendChild(what);
+
+    const facts = document.createElement('div');
+    facts.className = 'campaign-facts';
+    facts.textContent = [
+      `ответов ${watch.sent_ok}`,
+      watch.sent_err ? `ошибок ${watch.sent_err}` : '',
+      `через ${watch.delay_min}\u2013${watch.delay_max} с`,
+      watch.note,
+    ].filter(Boolean).join(' \u00b7 ');
+    card.appendChild(facts);
+
+    const actions = document.createElement('div');
+    actions.className = 'campaign-actions';
+    actions.appendChild(smallButton(
+      watch.status === 'running' ? 'Пауза' : 'Продолжить',
+      () => toggleWatch(watch),
+    ));
+    actions.appendChild(smallButton('Изменить', () => openWatch(watch)));
+    const drop = smallButton('Удалить', () => removeWatch(watch));
+    drop.classList.add('danger');
+    actions.appendChild(drop);
+    card.appendChild(actions);
+
+    box.appendChild(card);
+  }
+}
+
+function watchBadge(watch) {
+  const badge = document.createElement('span');
+  badge.className = 'badge';
+  if (watch.status === 'paused') badge.classList.add('paused');
+  if (watch.status === 'stopped') badge.classList.add('stopped');
+  badge.textContent = watch.status === 'running' ? 'следит'
+    : (watch.status === 'paused' ? 'пауза' : 'остановлен');
+  return badge;
+}
+
+function smallButton(label, onClick) {
+  const button = document.createElement('button');
+  button.className = 'btn small';
+  button.textContent = label;
+  button.onclick = () => onClick(button);
+  return button;
+}
+
+/** Экран наблюдения. Без аргумента — новое, с наблюдением — правка. */
+async function openWatch(watch) {
+  const alive = (state.accounts || []).filter((a) => a.status === 'ok');
+  if (!alive.length) {
+    return alertBox('Сначала подключите аккаунт — комментировать некому.');
+  }
+
+  const parts = splitVariants(watch ? watch.variants : []);
+  watching = {
+    id: watch ? watch.id : 0,
+    accountId: watch ? watch.account_id : alive[0].id,
+    chatId: watch ? watch.chat_id : 0,
+    texts: parts.texts.length ? parts.texts : [''],
+    attach: parts.attach.length ? parts.attach : [null],
+    savedIds: parts.savedIds,
+    pick: watch ? watch.pick : 'random',
+  };
+
+  $('watch-head').textContent = watch ? 'Автокомментарий' : 'Новый автокомментарий';
+  $('watch-save').textContent = watch ? 'Сохранить' : 'Включить';
+  // Канал у наблюдения не меняется: сменить его — то же, что завести
+  // другое наблюдение, а отметка последнего поста осталась бы от
+  // прежнего канала и первый же ответ ушёл бы не туда.
+  $('watch-channel-box').hidden = Boolean(watch);
+  $('watch-title').hidden = !watch;
+  if (watch) $('watch-title').textContent = watch.title;
+  $('watch-delay-min').value = watch ? watch.delay_min : 30;
+  $('watch-delay-max').value = watch ? watch.delay_max : 120;
+  setWatchPick(watching.pick);
+  fail('watch-err', '');
+  renderWatchVariants();
+  show('watch');
+
+  hintInto($('watch-channels'), 'Загружаем…');
+  await loadMaterials(watching.accountId);
+  renderWatchVariants();
+  if (!watch) await loadWatchChannels();
+}
+
+/** Каналы аккаунта. Только каналы: комментарии бывают под их постами. */
+async function loadWatchChannels() {
+  const box = $('watch-channels');
+  const result = await api('/api/chats', { account_id: watching.accountId });
+  if (!result.ok) return hintInto(box, result.error);
+
+  const channels = (result.chats || []).filter((c) => c.broadcast);
+  box.textContent = '';
+  if (!channels.length) {
+    return hintInto(box, 'Каналов не нашлось. Подпишитесь на канал с этого '
+      + 'аккаунта и обновите список чатов на шаге «Куда» новой рассылки.');
+  }
+  for (const channel of channels) {
+    const row = document.createElement('label');
+    row.className = 'pick';
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = 'watch-channel';
+    // В ответе /api/chats номер чата лежит в id, а не в chat_id: имена
+    // полей наружу и внутри базы намеренно разные.
+    input.checked = channel.id === watching.chatId;
+    input.onchange = () => { watching.chatId = channel.id; };
+    row.appendChild(input);
+    const title = document.createElement('span');
+    title.className = 'pick-title';
+    title.textContent = channel.title;
+    row.appendChild(title);
+    box.appendChild(row);
+  }
+}
+
+function renderWatchVariants() {
+  const box = $('watch-variants');
+  box.textContent = '';
+  watching.texts.forEach((value, index) => {
+    const row = document.createElement('div');
+    row.className = 'variant';
+
+    const area = document.createElement('textarea');
+    area.value = value;
+    area.placeholder = index === 0
+      ? 'Что написать под постом'
+      : 'Другая формулировка того же';
+    area.oninput = () => { watching.texts[index] = area.value; };
+    row.appendChild(area);
+
+    if (watching.texts.length > 1) {
+      const drop = document.createElement('button');
+      drop.className = 'variant-drop';
+      drop.appendChild(icon('x', 'ic-s'));
+      drop.onclick = () => {
+        watching.texts.splice(index, 1);
+        watching.attach.splice(index, 1);
+        renderWatchVariants();
+      };
+      row.appendChild(drop);
+    }
+    row.appendChild(attachRow(watching, index, renderWatchVariants));
+    box.appendChild(row);
+  });
+  $('watch-variant-add').disabled =
+    watching.texts.length >= state.limits.max_variants;
+}
+
+function setWatchPick(mode) {
+  watching.pick = mode;
+  for (const tab of document.querySelectorAll('.wtab')) {
+    tab.classList.toggle('active', tab.dataset.pick === mode);
+  }
+}
+
+async function saveWatch(button) {
+  fail('watch-err', '');
+  if (!watching.id && !watching.chatId) {
+    return fail('watch-err', 'Выберите канал.');
+  }
+  const body = {
+    account_id: watching.accountId,
+    chat_id: watching.chatId,
+    variants: packVariants(watching),
+    delay_min: parseInt($('watch-delay-min').value, 10) || 0,
+    delay_max: parseInt($('watch-delay-max').value, 10) || 0,
+    pick: watching.pick,
+  };
+  if (watching.id) body.watch_id = watching.id;
+
+  const done = busy(button, watching.id ? 'Сохраняем…' : 'Включаем…');
+  const result = await api(
+    watching.id ? '/api/watch/edit' : '/api/watch/create', body,
+  );
+  done();
+  if (!result.ok) return fail('watch-err', result.error);
+  state.watches = result.watches;
+  renderWatches();
+  haptic('success');
+  await refresh();
+}
+
+async function toggleWatch(watch) {
+  const result = await api('/api/watch/toggle', { watch_id: watch.id });
+  if (!result.ok) return alertBox(result.error);
+  state.watches = result.watches;
+  renderWatches();
+}
+
+function removeWatch(watch) {
+  confirmBox(`Удалить автокомментарий в «${watch.title}»?`, async (yes) => {
+    if (!yes) return;
+    const result = await api('/api/watch/delete', { watch_id: watch.id });
+    if (!result.ok) return alertBox(result.error);
+    state.watches = result.watches;
+    renderWatches();
+  });
+}
+
 
 // --- варианты сообщения ------------------------------------------------
 
@@ -2221,6 +2452,18 @@ function wire() {
   $('admin-query').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') adminFind();
   });
+  $('add-watch').onclick = () => openWatch(null);
+  $('watch-save').onclick = (event) => saveWatch(event.currentTarget);
+  $('watch-variant-add').onclick = () => {
+    if (watching.texts.length >= state.limits.max_variants) return;
+    watching.texts.push('');
+    watching.attach.push(null);
+    renderWatchVariants();
+  };
+  for (const tab of document.querySelectorAll('.wtab')) {
+    tab.onclick = () => setWatchPick(tab.dataset.pick);
+  }
+
   $('open-topup').onclick = openTopup;
   $('topup-custom').onclick = askTopupCustom;
   $('topup-own-apply').onclick = applyTopupCustom;
