@@ -1489,6 +1489,34 @@ async function openWatch(watch) {
     pick: watch ? watch.pick : 'random',
   };
 
+  // Аккаунт спрашиваем, только когда их несколько: выбор из одного
+  // пункта — лишний вопрос в начале формы. У готового наблюдения
+  // аккаунт не меняется: сменить его — то же, что завести другое, а
+  // отметка последнего поста и права в группе обсуждений остались бы от
+  // прежнего.
+  const select = $('watch-account');
+  select.textContent = '';
+  for (const account of alive) {
+    const option = document.createElement('option');
+    option.value = String(account.id);
+    option.textContent = account.name || account.phone;
+    select.appendChild(option);
+  }
+  select.value = String(watching.accountId);
+  select.onchange = async () => {
+    watching.accountId = parseInt(select.value, 10);
+    // Каналы и «Избранное» у другого аккаунта свои: и список каналов, и
+    // прикреплённые материалы надо перечитать, иначе к ответу останется
+    // привязан материал, которого у этого аккаунта нет.
+    watching.chatId = 0;
+    watching.attach = watching.attach.map(() => null);
+    hintInto($('watch-channels'), 'Загружаем…');
+    await loadMaterials(watching.accountId);
+    renderWatchVariants();
+    await loadWatchChannels();
+  };
+  $('watch-account-pick').hidden = Boolean(watch) || alive.length < 2;
+
   $('watch-head').textContent = watch ? 'Автокомментарий' : 'Новый автокомментарий';
   $('watch-save').textContent = watch ? 'Сохранить' : 'Включить';
   // Канал у наблюдения не меняется: сменить его — то же, что завести

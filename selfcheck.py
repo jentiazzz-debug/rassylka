@@ -245,6 +245,60 @@ async def check_throttle() -> None:
               "поддержку" in error.message, error.message)
 
 
+def check_client_args() -> None:
+    """Клиент собирается правильно даже после импорта opentele.
+
+    Проверка узкая, но за ней стоит целая поломка на боевом. opentele
+    (он разбирает tdata) при импорте подменяет TelegramClient.__init__
+    своим и вставляет параметр `api` ВТОРЫМ — между session и api_id.
+    Класс остаётся тем же объектом, подмену не видно ничем, а любой
+    позиционный вызов после этого разъезжается: api_hash получает число
+    вместо строки, и Telethon падает на сериализации словами «bytes or
+    str expected, not int». Догадаться по такой ошибке про tdata
+    невозможно.
+
+    Хуже всего, что импорт ленивый: пока никто не загружал tdata, вход
+    по номеру работает, а после первой же загрузки ломается до
+    перезапуска процесса. Такое глазами не ловится — только так.
+    """
+    print("\nПодключение к Telegram")
+    try:
+        import opentele.td  # noqa: F401
+        import opentele.tl  # noqa: F401
+    except Exception as error:  # noqa: BLE001 — без PyQt5 проверять нечего
+        print(f"  [ .. ] opentele не поставлен, пропускаем ({error})")
+        return
+
+    import inspect
+
+    from telethon import TelegramClient
+
+    names = list(inspect.signature(TelegramClient.__init__).parameters)
+    check("opentele действительно вмешивается в конструктор",
+          names[:4] == ["self", "session", "api", "api_id"], str(names[:5]))
+
+    config.MTPROTO_API_ID = 12345
+    config.MTPROTO_API_HASH = "0123456789abcdef0123456789abcdef"
+    client = accounts._client("+79990000001")
+    check("api_id доезжает до клиента", client.api_id == 12345,
+          repr(client.api_id))
+    check("api_hash доезжает строкой, а не числом",
+          client.api_hash == config.MTPROTO_API_HASH,
+          repr(client.api_hash))
+
+    # То же для подключения к сохранённой сессии: там ключи берутся из
+    # аккаунта, но сдвинуться могли бы точно так же.
+    params = accounts._api_params(
+        db.Account(
+            id=1, user_id=USER, phone="+79990000001", tg_id=None, name=None,
+            username=None, status="ok", added_at=0, checked_at=0, note=None,
+        )
+    )
+    check("для сохранённой сессии ключи тоже именованные",
+          params["api_hash"] == config.MTPROTO_API_HASH
+          and isinstance(params["api_id"], int), str(params)[:120])
+
+
 def check_phones() -> None:
     print("\nРазбор номера")
     cases = {
@@ -2243,6 +2297,7 @@ async def run() -> None:
         await check_accounts()
         await check_throttle()
         check_phones()
+        check_client_args()
         check_init_data()
         await check_broadcast()
         await check_broadcast_errors()

@@ -115,13 +115,27 @@ def _client(phone: str):
     from telethon import TelegramClient
     from telethon.sessions import StringSession
 
+    # ВСЕ аргументы по именам, и это не стиль, а обязательное условие.
+    #
+    # opentele (он разбирает tdata) при импорте подменяет
+    # TelegramClient.__init__ своим и вставляет туда параметр `api`
+    # ВТОРЫМ — между session и api_id. Класс при этом остаётся тем же
+    # объектом, подмену не видно ничем. Позиционный вызов после этого
+    # разъезжается: api_id уезжает в api, api_hash — в api_id, а
+    # api_hash остаётся пустым. Telethon кладёт его в запрос как есть и
+    # падает на сериализации с «bytes or str expected, not int» — по
+    # такой ошибке про tdata не догадаться никогда.
+    #
+    # Ловилось это тем хуже, что opentele импортируется лениво: пока
+    # никто не загружал tdata, вход по номеру работал, а после первой
+    # же загрузки ломался до перезапуска процесса.
+    #
+    # Типы тут же приводятся к нужным: если ключи в окружении заданы
+    # криво, лучше внятный отказ Telegram, чем падение сериализации.
     return TelegramClient(
-        StringSession(),
-        # Типы приводим здесь, у самого Telethon: он кладёт api_hash в
-        # запрос как есть и на числе падает с «bytes or str expected» —
-        # ошибкой, по которой про настройки не догадаться.
-        int(config.MTPROTO_API_ID or 0),
-        str(config.MTPROTO_API_HASH or ""),
+        session=StringSession(),
+        api_id=int(config.MTPROTO_API_ID or 0),
+        api_hash=str(config.MTPROTO_API_HASH or ""),
         device_model=DEVICE_MODEL,
         system_version="Windows 10",
         app_version=APP_VERSION,
@@ -461,8 +475,8 @@ def _api_params(account: db.Account) -> dict:
             "system_lang_code": saved.get("system_lang_code") or "ru",
         }
     return {
-        "api_id": config.MTPROTO_API_ID,
-        "api_hash": config.MTPROTO_API_HASH,
+        "api_id": int(config.MTPROTO_API_ID or 0),
+        "api_hash": str(config.MTPROTO_API_HASH or ""),
         "device_model": DEVICE_MODEL,
         "system_version": "Windows 10",
         "app_version": APP_VERSION,
@@ -486,7 +500,11 @@ async def client_for(account: db.Account):
             "Сессия этого аккаунта больше не читается — подключите его заново.",
             restart=True,
         )
-    client = TelegramClient(StringSession(session), **_api_params(account))
+    # session тоже по имени — см. длинное объяснение в _client: пока
+    # аргументы именованные, вставка чужого параметра ничего не ломает.
+    client = TelegramClient(
+        session=StringSession(session), **_api_params(account)
+    )
     await client.connect()
     return client
 
