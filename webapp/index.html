@@ -499,15 +499,18 @@
     <div class="panel">
       <div class="row own">
         <input class="field own-input" id="watch-delay-min" type="number"
-               inputmode="numeric" placeholder="от, сек">
+               inputmode="numeric" placeholder="от, сек" min="0">
         <input class="field own-input" id="watch-delay-max" type="number"
-               inputmode="numeric" placeholder="до, сек">
+               inputmode="numeric" placeholder="до, сек" min="0">
       </div>
     </div>
     <p class="hint small pad">
-      Ответ уходит через случайное время в этой вилке. Комментарий
-      через полсекунды после поста не пишет ни один человек — это первое,
-      за что комментатора считают роботом.
+      <b>0 и 0 — отвечать сразу.</b> Так и задумано для раздач: там
+      первым достаются подарки, и любая пауза означает, что их разберут
+      без вас. Ответ уходит по событию, в ту же секунду.
+      <br><br>
+      Другие числа — вилка: ответ уйдёт через случайное время между
+      ними. Это выглядит человечнее, но медленнее.
     </p>
 
     <p id="watch-err" class="err pad" hidden></p>

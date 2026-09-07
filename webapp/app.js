@@ -1477,8 +1477,10 @@ async function openWatch(watch) {
   $('watch-channel-box').hidden = Boolean(watch);
   $('watch-title').hidden = !watch;
   if (watch) $('watch-title').textContent = watch.title;
-  $('watch-delay-min').value = watch ? watch.delay_min : 30;
-  $('watch-delay-max').value = watch ? watch.delay_max : 120;
+  // По умолчанию ноль: ради раздач эту штуку и просили, а там
+  // выигрывают секунды.
+  $('watch-delay-min').value = watch ? watch.delay_min : 0;
+  $('watch-delay-max').value = watch ? watch.delay_max : 0;
   setWatchPick(watching.pick);
   fail('watch-err', '');
   renderWatchVariants();

@@ -49,6 +49,11 @@ log = logging.getLogger("rassylka.broadcast")
 class _Live:
     client: Any
     used_at: float
+    #: Подключение слушает события и закрытию по простою не подлежит.
+    #: Без этого автокомментарий переставал бы работать ровно через
+    #: CLIENT_IDLE после последней отправки — и молча: слушатель уехал
+    #: бы вместе с подключением, а наблюдение осталось бы «включённым».
+    keep: bool = False
     #: Одно подключение — одна отправка за раз. Telethon выдержал бы и
     #: параллельные, но нам как раз не нужно, чтобы аккаунт писал в два
     #: чата одновременно.
@@ -85,6 +90,8 @@ async def close_idle() -> None:
     """Закрыть подключения, которыми давно не пользовались."""
     now = time.monotonic()
     for account_id, live in list(_clients.items()):
+        if live.keep:
+            continue
         if now - live.used_at > config.CLIENT_IDLE and not live.lock.locked():
             await _close(account_id)
 

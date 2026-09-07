@@ -764,11 +764,12 @@ async def _watch_form(user: dict, data: dict) -> tuple[dict, str]:
     low = _int(data.get("delay_min"))
     high = _int(data.get("delay_max"))
     if low < config.COMMENT_MIN_DELAY:
-        # Планка не техническая, а защитная: комментарий через полсекунды
-        # после поста не пишет ни один человек.
+        # Планка стоит только если её задал владелец бота. По умолчанию
+        # она нулевая: раздачи «первым десяти» выигрываются секундами, и
+        # ждать ради правдоподобия там нечего.
         return {}, (
-            f"Задержка меньше {config.COMMENT_MIN_DELAY} с — так "
-            "комментарий выглядит роботом. Поставьте больше."
+            f"Задержка меньше {config.COMMENT_MIN_DELAY} с здесь не "
+            "разрешена."
         )
     if high < low:
         high = low

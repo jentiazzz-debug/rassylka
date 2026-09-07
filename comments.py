@@ -6,16 +6,32 @@
 никто никуда не пишет, и в этом вся разница: рассылка идёт по
 расписанию, а комментарий приходит на событие.
 
-**Как ловим пост.** Опросом, а не событиями Telethon. События требуют
-вечно живого подключения на каждый аккаунт, а подключения здесь
-переиспользуются и закрываются по простою. Опрос раз в полминуты даёт
-тот же результат и переживает переподключения, а мгновенная реакция тут
-и не нужна — наоборот, вредна.
+**Как ловим пост — двумя способами сразу, и это не перестраховка.**
 
-**Почему не отвечаем сразу.** Комментарий через полсекунды после поста
-не пишет ни один человек, и это первое, за что комментатора считают
-роботом. Поэтому у наблюдения есть вилка задержки, и внутри неё ответ
-уходит в случайный момент.
+*События.* На каждый аккаунт с включённым наблюдением держится живое
+подключение с обработчиком новых сообщений канала. Ответ уходит в ту же
+секунду — ради этого всё и затевалось: раздачи «первым десяти»
+выигрываются секундами, и любая пауза здесь означает, что подарки
+разберут без нас.
+
+*Опрос* остаётся страховкой. Подключение рвётся, процесс
+перезапускается, Telegram молчит — событие теряется, и без опроса пост
+остался бы неотвеченным навсегда. Опрос раз в `COMMENT_POLL` секунд
+подбирает всё, что пропустили события; отметка последнего поста общая,
+поэтому дважды один пост не комментируется.
+
+**Задержка по умолчанию нулевая.** Ответ через паузу выглядит
+человечнее, и в вилке `delay_min…delay_max` это по-прежнему можно
+включить. Но по умолчанию мы отвечаем сразу: выбор между
+«правдоподобно» и «успеть» здесь сделан в пользу «успеть» — за этим
+функцию и просили.
+
+**Обсуждение появляется не мгновенно.** Группа обсуждений подхватывает
+свежий пост с задержкой в доли секунды, и ответ в ту же миллисекунду
+Telegram встречает словами «нет такого сообщения». Поэтому попытка не
+одна: `COMMENT_RETRIES` заходов с паузой `COMMENT_RETRY_PAUSE`. Без них
+мгновенный режим ломался бы ровно на самых быстрых постах — тех, ради
+которых он и сделан.
 
 **Куда именно пишем.** В группу обсуждений канала, ответом на пост —
 `comment_to` у Telethon делает ровно это: сам спрашивает у Telegram
@@ -83,13 +99,38 @@ async def newest_post(account, chat: db.Chat) -> int:
     return int(found[0].id) if found else 0
 
 
+#: Отказы, которые значат «обсуждение ещё не подхватило пост». Их ждут,
+#: а не считают ошибкой: через секунду то же самое пройдёт.
+NOT_READY = {"MsgIdInvalidError", "MessageIdInvalidError"}
+
+
 async def _reply(client, watch: db.Watch, chat: db.Chat, post_id: int) -> None:
-    """Оставить один комментарий под постом.
+    """Оставить один комментарий под постом, дождавшись обсуждения.
 
     Вариант выбирается тем же способом, что и в рассылке: один и тот же
     текст под каждым постом ловится проверкой на совпадение так же
     легко, как и в чатах.
     """
+    for attempt in range(config.COMMENT_RETRIES):
+        try:
+            await _send(client, watch, chat, post_id)
+            return
+        except Exception as error:
+            if (type(error).__name__ not in NOT_READY
+                    or attempt == config.COMMENT_RETRIES - 1):
+                raise
+            # Пост есть, а обсуждения под ним ещё нет. Это норма на
+            # свежем посте, и ждать тут дешевле, чем отдавать его в
+            # ошибки: следующий заход опроса будет только через минуту.
+            log.debug(
+                "обсуждение поста %s ещё не готово, попытка %s",
+                post_id, attempt + 1,
+            )
+            await asyncio.sleep(config.COMMENT_RETRY_PAUSE)
+
+
+async def _send(client, watch: db.Watch, chat: db.Chat, post_id: int) -> None:
+    """Одна попытка отправки — без повторов."""
     items = await db.watch_variants(watch.id)
     if not items:
         raise RuntimeError("нет ни одного варианта ответа")
@@ -146,8 +187,13 @@ async def _reply(client, watch: db.Watch, chat: db.Chat, post_id: int) -> None:
     )
 
 
-async def run_one(bot, watch: db.Watch) -> None:
-    """Один заход в канал: посмотреть посты и, если есть новый, ответить."""
+async def run_one(bot, watch: db.Watch, post_id: int | None = None) -> None:
+    """Ответить на пост канала.
+
+    `post_id` приходит из события — тогда в канал за списком постов
+    ходить незачем. Без него это обычный заход опросом: посмотреть, не
+    вышло ли чего нового.
+    """
     now = int(time.time())
 
     subscription = await db.subscription(watch.user_id)
@@ -177,16 +223,17 @@ async def run_one(bot, watch: db.Watch) -> None:
     chat = found[0]
 
     live = await broadcast._live(account)
-    try:
-        async with live.lock:
-            posts = await _post_ids(live.client, chat, watch.last_msg_id)
-    except Exception as error:
-        await _handle_error(bot, watch, account, chat, error)
-        return
-
-    if not posts:
-        await db.reschedule_watch(watch.id, now + config.COMMENT_POLL)
-        return
+    if post_id is None:
+        try:
+            async with live.lock:
+                posts = await _post_ids(live.client, chat, watch.last_msg_id)
+        except Exception as error:
+            await _handle_error(bot, watch, account, chat, error)
+            return
+        if not posts:
+            await db.reschedule_watch(watch.id, now + config.COMMENT_POLL)
+            return
+        post_id = posts[0]
 
     # Разрыв между сообщениями аккаунта и суточный потолок — общие с
     # рассылкой: Telegram смотрит на аккаунт, а не на то, чем мы его
@@ -202,7 +249,13 @@ async def run_one(bot, watch: db.Watch) -> None:
             await db.set_watch_status(watch.id, "running", texts.NOTE_DAILY)
         return
 
-    post_id = posts[0]
+    pause = _delay(watch)
+    if pause:
+        # Ждём до отправки, а не после: иначе пауза сдвигала бы не ответ,
+        # а следующий заход опроса, и «отвечать через минуту» означало бы
+        # «отвечать сразу, но раз в минуту».
+        await asyncio.sleep(pause)
+
     try:
         async with live.lock:
             await _reply(live.client, watch, chat, post_id)
@@ -225,7 +278,7 @@ async def run_one(bot, watch: db.Watch) -> None:
     # журнал рассылки читается по её номеру и такие записи не подхватит.
     await db.log_send(0, account.id, chat.chat_id, chat.title, True, None)
     await db.mark_watch_seen(watch.id, post_id, ok=True)
-    await db.reschedule_watch(watch.id, now + _delay(watch))
+    await db.reschedule_watch(watch.id, int(time.time()) + config.COMMENT_POLL)
     log.info(
         "автокомментарий %s: ответ под постом %s в «%s»",
         watch.id, post_id, chat.title,
@@ -233,15 +286,15 @@ async def run_one(bot, watch: db.Watch) -> None:
 
 
 def _delay(watch: db.Watch) -> int:
-    """Через сколько отвечать на следующий пост.
+    """Через сколько отвечать. Ноль — сразу.
 
-    Задержка не только для правдоподобия: если канал выложил три поста
-    подряд, три комментария подряд без пауз выглядят хуже, чем сами
-    посты.
+    Вилка задаётся наблюдением, но ниже общей планки не опускается: она
+    на случай, когда владелец бота решил, что мгновенные ответы ему
+    дороже успетых раздач.
     """
     low = max(config.COMMENT_MIN_DELAY, watch.delay_min)
     high = max(low, watch.delay_max)
-    return random.randint(low, high)
+    return low if low == high else random.randint(low, high)
 
 
 async def _handle_error(bot, watch: db.Watch, account, chat, error) -> None:
@@ -289,7 +342,94 @@ async def _handle_error(bot, watch: db.Watch, account, chat, error) -> None:
     await db.reschedule_watch(watch.id, int(time.time()) + config.COMMENT_POLL)
 
 
+# --- мгновенный режим: подписка на новые посты ------------------------
+
+#: Какие каналы уже слушает аккаунт: {account_id: {chat_id: watch_id}}.
+#: Нужно, чтобы не вешать второй обработчик на тот же канал и снимать
+#: подписку, когда наблюдение выключили.
+_listening: dict[int, dict[int, int]] = {}
+
+
+async def ensure_listeners(bot) -> None:
+    """Привести подписки в соответствие с включёнными наблюдениями.
+
+    Вызывается на каждом тике: наблюдения включают и выключают из
+    приложения, а узнать об этом иначе процессу неоткуда.
+    """
+    from telethon import events
+
+    want: dict[int, dict[int, int]] = {}
+    for watch in await db.watches_running():
+        want.setdefault(watch.account_id, {})[watch.chat_id] = watch.id
+
+    # Ушедшие: аккаунт, у которого не осталось наблюдений, больше не
+    # обязан держать подключение живым.
+    for account_id in list(_listening):
+        if account_id not in want:
+            _listening.pop(account_id, None)
+            live = broadcast._clients.get(account_id)
+            if live is not None:
+                live.keep = False
+
+    for account_id, channels in want.items():
+        known = _listening.setdefault(account_id, {})
+        fresh = {chat_id: wid for chat_id, wid in channels.items()
+                 if chat_id not in known}
+        known.clear()
+        known.update(channels)
+        if not fresh:
+            continue
+
+        account = await db.account_by_id(account_id)
+        if account is None or account.status != "ok":
+            _listening.pop(account_id, None)
+            continue
+
+        try:
+            live = await broadcast._live(account)
+        except Exception as error:
+            log.warning("не подключиться к аккаунту %s: %s", account_id, error)
+            _listening.pop(account_id, None)
+            continue
+        live.keep = True
+
+        for chat_id in fresh:
+            live.client.add_event_handler(
+                _on_post(bot, account_id, chat_id),
+                events.NewMessage(chats=chat_id),
+            )
+            log.info("слушаю посты канала %s аккаунтом %s", chat_id, account_id)
+
+
+def _on_post(bot, account_id: int, chat_id: int):
+    """Обработчик нового поста. Замыкание, а не метод: Telethon хранит
+    обработчики по объекту функции, и общий метод пришлось бы различать
+    вручную."""
+
+    async def handler(event) -> None:
+        # Пост мог прийти в канал, наблюдение за которым уже выключили:
+        # обработчик снимается не мгновенно.
+        if _listening.get(account_id, {}).get(chat_id) is None:
+            return
+        watch = await db.watch_by_chat(account_id, chat_id)
+        if watch is None or watch.status != "running":
+            return
+        if event.id <= watch.last_msg_id:
+            return
+        try:
+            await run_one(bot, watch, post_id=event.id)
+        except Exception:
+            log.exception("мгновенный ответ на пост %s сорвался", event.id)
+
+    return handler
+
+
 async def tick(bot) -> None:
+    try:
+        await ensure_listeners(bot)
+    except Exception:
+        log.exception("подписка на посты сорвалась")
+
     now = int(time.time())
     for watch in await db.due_watches(now):
         try:
@@ -303,10 +443,11 @@ async def tick(bot) -> None:
 
 async def worker(bot) -> None:
     log.info(
-        "автокомментарии: опрос каналов раз в %s с, отставание не больше "
-        "%s постов",
+        "автокомментарии: ответ по событию, опрос страховкой раз в %s с, "
+        "отставание не больше %s постов, задержка от %s с",
         config.COMMENT_POLL,
         config.COMMENT_CATCHUP,
+        config.COMMENT_MIN_DELAY,
     )
     while True:
         await asyncio.sleep(config.BROADCAST_TICK)

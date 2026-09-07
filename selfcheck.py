@@ -1972,6 +1972,49 @@ async def check_watches() -> None:
           comments._delay(tight) >= config.COMMENT_MIN_DELAY,
           str(comments._delay(tight)))
 
+    # Мгновенный режим — то, ради чего это и просили: в раздачах
+    # подарки достаются первым, и любая пауза означает, что их разберут
+    # без нас.
+    instant = dataclasses.replace(fresh, delay_min=0, delay_max=0)
+    config.COMMENT_MIN_DELAY = 0
+    check("нулевая вилка означает ответ без паузы",
+          comments._delay(instant) == 0, str(comments._delay(instant)))
+
+    # Владелец бота может поднять общую планку, и тогда она сильнее
+    # настройки наблюдения: это его решение про все аккаунты сразу.
+    config.COMMENT_MIN_DELAY = 20
+    check("общая планка сильнее нулевой вилки",
+          comments._delay(instant) == 20, str(comments._delay(instant)))
+    config.COMMENT_MIN_DELAY = 0
+
+    # Слушатели: движок держит подписку на посты по включённым
+    # наблюдениям, и список берётся без оглядки на владельца — слушать
+    # надо все, а не только свои.
+    running = await db.watches_running()
+    check("включённое наблюдение попадает в слушатели",
+          any(w.id == watch_id for w in running), str([w.id for w in running]))
+    found = await db.watch_by_chat(account_id, -2001)
+    check("наблюдение находится по аккаунту и каналу",
+          found is not None and found.id == watch_id, str(found))
+    check("по чужому каналу не находится",
+          await db.watch_by_chat(account_id, -9999) is None)
+    check("аккаунт достаётся движку без user_id",
+          (await db.account_by_id(account_id)) is not None)
+
+    await db.set_watch_status(watch_id, "paused", None)
+    running = await db.watches_running()
+    check("выключенное наблюдение из слушателей уходит",
+          not any(w.id == watch_id for w in running))
+    await db.set_watch_status(watch_id, "running", None)
+
+    # Подключение со слушателем нельзя закрывать по простою: слушатель
+    # уехал бы вместе с ним, а наблюдение осталось бы «включённым».
+    check("подключение со слушателем помечается", hasattr(broadcast._Live, "keep")
+          or "keep" in broadcast._Live.__dataclass_fields__)
+    js = (Path(__file__).parent / "broadcast.py").read_text(encoding="utf-8")
+    check("и обходится закрытием по простою",
+          "if live.keep:\n            continue" in js)
+
     # Мёртвый аккаунт уносит и наблюдения: писать всё равно нечем.
     stopped = await db.stop_account_watches(account_id, "сессия отозвана")
     check("наблюдения останавливаются вместе с аккаунтом", stopped == 1,

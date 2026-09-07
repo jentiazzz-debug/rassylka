@@ -1148,6 +1148,44 @@ async def due_watches(now: int) -> list[Watch]:
     return [_watch(row) for row in rows]
 
 
+async def watches_running() -> list[Watch]:
+    """Все включённые наблюдения, всех людей.
+
+    Нужно движку, а не человеку: по этому списку он держит подписки на
+    посты. Поэтому и без user_id — чужих наблюдений в приложении никто
+    не увидит, а слушать надо все.
+    """
+    rows = await _fetchall("SELECT * FROM watches WHERE status = 'running'")
+    return [_watch(row) for row in rows]
+
+
+async def watch_by_chat(account_id: int, chat_id: int) -> Watch | None:
+    """Наблюдение этого аккаунта за этим каналом.
+
+    Событие о новом посте знает только аккаунт и канал — по ним и
+    ищем. Пара уникальна на практике: заводить два наблюдения за одним
+    каналом с одного аккаунта незачем, а если такое случилось, отвечать
+    дважды под одним постом всё равно нельзя.
+    """
+    row = await _fetchone(
+        "SELECT * FROM watches WHERE account_id = ? AND chat_id = ? "
+        "ORDER BY id LIMIT 1",
+        (account_id, chat_id),
+    )
+    return _watch(row) if row else None
+
+
+async def account_by_id(account_id: int) -> Account | None:
+    """Аккаунт без оглядки на владельца — для движка.
+
+    В приложении так искать нельзя: там аккаунт всегда спрашивают вместе
+    с user_id, чтобы чужой не открылся по номеру. Движку же владелец
+    известен из самого наблюдения.
+    """
+    row = await _fetchone("SELECT * FROM accounts WHERE id = ?", (account_id,))
+    return _account(row) if row else None
+
+
 async def count_watches(user_id: int) -> int:
     row = await _fetchone(
         "SELECT COUNT(*) AS n FROM watches WHERE user_id = ?", (user_id,)
