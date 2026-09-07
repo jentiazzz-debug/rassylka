@@ -924,19 +924,41 @@ function renderMain() {
  *  значит написать в одни чаты дважды, а другие пропустить. */
 let editing = null;
 
+/** Разложить сохранённые варианты обратно на то, чем их правят.
+
+    Вариант с медиа И текстом — это текст с прикреплением, а не «просто
+    материал»: свалив его в материалы, правка потеряла бы текст. */
+function splitVariants(variants) {
+  const texts = [];
+  const attach = [];
+  const savedIds = new Set();
+  for (const item of variants || []) {
+    const text = (item.text || '').trim();
+    if (item.content === 'saved' && !text) {
+      savedIds.add(item.saved_id);
+      continue;
+    }
+    texts.push(item.text || '');
+    attach.push(item.content === 'saved' ? item.saved_id : null);
+  }
+  return { texts, attach, savedIds };
+}
+
 async function openEdit(campaign) {
-  const variants = campaign.variants || [];
+  const parts = splitVariants(campaign.variants);
   editing = {
     id: campaign.id,
     accountId: campaign.account_id,
-    texts: variants.filter((v) => v.content !== 'saved').map((v) => v.text),
-    savedIds: new Set(
-      variants.filter((v) => v.content === 'saved').map((v) => v.saved_id),
-    ),
+    texts: parts.texts,
+    attach: parts.attach,
+    savedIds: parts.savedIds,
     interval: campaign.interval,
     pick: campaign.pick || 'random',
   };
-  if (!editing.texts.length && !editing.savedIds.size) editing.texts = [''];
+  if (!editing.texts.length && !editing.savedIds.size) {
+    editing.texts = [''];
+    editing.attach = [null];
+  }
 
   fail('edit-err', '');
   $('edit-about').textContent =
@@ -975,10 +997,12 @@ function renderEditVariants() {
       drop.appendChild(icon('x', 'ic-s'));
       drop.onclick = () => {
         editing.texts.splice(index, 1);
+        editing.attach.splice(index, 1);
         renderEditVariants();
       };
       row.appendChild(drop);
     }
+    row.appendChild(attachRow(editing, index, renderEditVariants));
     box.appendChild(row);
   });
   renderEditCount();
@@ -987,14 +1011,7 @@ function renderEditVariants() {
 }
 
 function editVariants() {
-  const out = editing.texts
-    .map((text) => text.trim())
-    .filter(Boolean)
-    .map((text) => ({ content: 'text', text }));
-  for (const saved_id of editing.savedIds) {
-    out.push({ content: 'saved', saved_id });
-  }
-  return out.slice(0, state.limits.max_variants);
+  return packVariants(editing);
 }
 
 function renderEditCount() {
@@ -1259,6 +1276,10 @@ function openNew() {
     chatIds: new Set(),
     savedIds: new Set(),
     texts: [''],
+    // Что прикреплено к каждому тексту — список той же длины, что и
+    // texts: так правка и удаление вариантов остаются простыми
+    // операциями над двумя массивами, а не над списком объектов.
+    attach: [null],
     interval: 900,
     pick: 'random',
     step: 0,
@@ -1356,16 +1377,119 @@ function jumpStep(index) {
 
 // --- варианты сообщения ------------------------------------------------
 
-/** Собрать варианты: непустые тексты плюс отмеченные материалы. */
-function collectVariants() {
-  const out = draft.texts
-    .map((text) => text.trim())
-    .filter(Boolean)
-    .map((text) => ({ content: 'text', text }));
-  for (const saved_id of draft.savedIds) {
+/** Материалы, которым Telegram не даёт подписи. */
+const NO_CAPTION = new Set(['sticker', 'round']);
+
+function materialById(id) {
+  return picker.materials.find((m) => m.msg_id === id) || null;
+}
+
+/** Собрать варианты: тексты (со своим медиа, если прикреплено) плюс
+ *  материалы, отмеченные галочками отдельными вариантами. */
+function packVariants(store) {
+  const out = [];
+  store.texts.forEach((raw, index) => {
+    const text = (raw || '').trim();
+    const saved_id = (store.attach || [])[index] || null;
+    if (!text && !saved_id) return;
+    if (saved_id) out.push({ content: 'saved', saved_id, text });
+    else out.push({ content: 'text', text });
+  });
+  for (const saved_id of store.savedIds) {
     out.push({ content: 'saved', saved_id });
   }
   return out.slice(0, state.limits.max_variants);
+}
+
+function collectVariants() {
+  return packVariants(draft);
+}
+
+/** Строка «что прикреплено» под текстом варианта.
+
+    Список берётся из «Избранного» аккаунта, а не загрузкой файла:
+    файл уже лежит у Telegram, и пересылать его через наш сервер значит
+    хранить чужие фото и голосовые у себя — ради того же результата. */
+function attachRow(store, index, rerender) {
+  const row = document.createElement('div');
+  row.className = 'variant-attach';
+  const chosen = store.attach[index] ? materialById(store.attach[index]) : null;
+
+  if (chosen) {
+    row.appendChild(icon(MATERIAL_ICONS[chosen.kind] || 'file', 'ic-s'));
+    const name = document.createElement('span');
+    name.className = 'attach-name';
+    name.textContent = chosen.preview || 'Сообщение';
+    row.appendChild(name);
+
+    const drop = document.createElement('button');
+    drop.className = 'attach-drop';
+    drop.title = 'Открепить';
+    drop.appendChild(icon('x', 'ic-s'));
+    drop.onclick = () => {
+      store.attach[index] = null;
+      rerender();
+    };
+    row.appendChild(drop);
+    return row;
+  }
+
+  const add = document.createElement('button');
+  add.className = 'attach-add';
+  add.appendChild(icon('clip', 'ic-s'));
+  add.append('Прикрепить фото, видео или голосовое');
+  add.onclick = () => {
+    if (!picker.materials.length) {
+      return alertBox('Сначала отправьте фото, видео или голосовое в '
+        + '«Избранное» того аккаунта, с которого рассылаете, и нажмите '
+        + '«Перечитать «Избранное»» ниже.');
+    }
+    row.textContent = '';
+    row.appendChild(buildAttachPicker(store, index, rerender));
+  };
+  row.appendChild(add);
+  return row;
+}
+
+/** Выбор материала — родным списком: в WebView он открывается
+ *  привычным колесом, и своё меню тут только мешало бы. */
+function buildAttachPicker(store, index, rerender) {
+  const select = document.createElement('select');
+  select.className = 'attach-pick';
+
+  const empty = document.createElement('option');
+  empty.value = '';
+  empty.textContent = 'Выберите из «Избранного»…';
+  select.appendChild(empty);
+
+  for (const material of picker.materials) {
+    const option = document.createElement('option');
+    option.value = String(material.msg_id);
+    option.textContent = (material.preview || 'Сообщение')
+      + (NO_CAPTION.has(material.kind) ? ' — без подписи' : '');
+    select.appendChild(option);
+  }
+
+  select.onchange = () => {
+    const id = parseInt(select.value, 10);
+    if (!id) return;
+    const material = materialById(id);
+    // К стикеру и кружку подпись не пристаёт — не по нашему решению, а
+    // по устройству формата. Сказать об этом надо здесь, а не отказом
+    // при запуске: там уже поздно.
+    if (material && NO_CAPTION.has(material.kind)
+        && (store.texts[index] || '').trim()) {
+      alertBox('К стикеру и кружку Telegram не принимает подпись. '
+        + 'Очистите текст этого варианта или выберите другое.');
+      return;
+    }
+    store.attach[index] = id;
+    rerender();
+    haptic('light');
+  };
+
+  select.focus();
+  return select;
 }
 
 function renderVariants() {
@@ -1395,10 +1519,12 @@ function renderVariants() {
       drop.appendChild(icon('x', 'ic-s'));
       drop.onclick = () => {
         draft.texts.splice(index, 1);
+        draft.attach.splice(index, 1);
         renderVariants();
       };
       row.appendChild(drop);
     }
+    row.appendChild(attachRow(draft, index, renderVariants));
     box.appendChild(row);
   });
 
@@ -1416,6 +1542,7 @@ function renderVariantCount() {
 function addVariant() {
   if (draft.texts.length >= state.limits.max_variants) return;
   draft.texts.push('');
+  draft.attach.push(null);
   renderVariants();
   haptic('light');
 }
@@ -2139,6 +2266,7 @@ function wire() {
   $('edit-variant-add').onclick = () => {
     if (editing.texts.length >= state.limits.max_variants) return;
     editing.texts.push('');
+    editing.attach.push(null);
     renderEditVariants();
   };
 

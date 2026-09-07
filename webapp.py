@@ -664,8 +664,17 @@ async def api_chats_scan(request: web.Request, user: dict, data: dict) -> web.Re
 # --- рассылки ---------------------------------------------------------
 
 
-def _variants(data: dict, known_materials: set[int]) -> tuple[list[dict], str]:
+#: Чему Telegram не даёт подписи. К стикеру и кружку текст не пристаёт
+#: — не по нашему решению, а по устройству формата.
+NO_CAPTION = {"sticker", "round"}
+
+
+def _variants(data: dict, known_materials: dict[int, str]) -> tuple[list[dict], str]:
     """Разобрать варианты сообщения из запроса.
+
+    Вариант — это текст, медиа из «Избранного» или то и другое вместе. В
+    последнем случае текст уходит подписью к медиа: так фото и слова
+    приходят в чат одним сообщением, а не двумя.
 
     Материалы сверяются с кэшем аккаунта: список приходит из браузера, и
     принимать оттуда произвольные номера сообщений нельзя.
@@ -678,18 +687,28 @@ def _variants(data: dict, known_materials: set[int]) -> tuple[list[dict], str]:
     for item in raw[: config.MAX_VARIANTS]:
         if not isinstance(item, dict):
             continue
-        if item.get("content") == "saved":
-            saved_id = _int(item.get("saved_id"))
-            if saved_id in known_materials:
-                out.append({"content": "saved", "text": "", "saved_id": saved_id})
-            continue
+
         text = str(item.get("text") or "").strip()
-        if not text:
-            continue
         if len(text) > config.MAX_TEXT:
             return [], (
                 f"Слишком длинный текст: максимум {config.MAX_TEXT} символов."
             )
+
+        if item.get("content") == "saved":
+            saved_id = _int(item.get("saved_id"))
+            if saved_id not in known_materials:
+                continue
+            if text and known_materials[saved_id] in NO_CAPTION:
+                return [], (
+                    "К стикеру и кружку подпись не пристаёт — Telegram её не "
+                    "примет. Уберите текст у этого варианта или прикрепите "
+                    "что-то другое."
+                )
+            out.append({"content": "saved", "text": text, "saved_id": saved_id})
+            continue
+
+        if not text:
+            continue
         out.append({"content": "text", "text": text, "saved_id": None})
 
     if not out:
@@ -716,7 +735,7 @@ async def api_campaign_create(
     if account.status != "ok":
         return _fail("Этот аккаунт не в сети — подключите его заново.")
 
-    known_materials = {m["msg_id"] for m in await db.materials(account.id)}
+    known_materials = {m["msg_id"]: m["kind"] for m in await db.materials(account.id)}
     variants, error = _variants(data, known_materials)
     if error:
         return _fail(error)
@@ -812,7 +831,9 @@ async def api_campaign_edit(
     if campaign is None:
         return _fail("Рассылка не найдена.")
 
-    known_materials = {m["msg_id"] for m in await db.materials(campaign.account_id)}
+    known_materials = {
+        m["msg_id"]: m["kind"] for m in await db.materials(campaign.account_id)
+    }
     variants, error = _variants(data, known_materials)
     if error:
         return _fail(error)

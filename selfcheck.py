@@ -1820,6 +1820,90 @@ async def check_variants() -> None:
     await db.delete_account(USER, account_id)
 
 
+async def check_attached_media() -> None:
+    print("\nМедиа, прикреплённое к тексту")
+
+    # Разбор запроса. Текст и медиа в одном варианте — это подпись к
+    # медиа, а не два сообщения подряд.
+    known = {501: "photo", 502: "text", 503: "sticker", 504: "gif",
+             505: "round", 506: "audio"}
+
+    items, error = webapp._variants({"variants": [
+        {"content": "saved", "saved_id": 501, "text": "Привет!"},
+    ]}, known)
+    check("текст доезжает вместе с медиа", not error and len(items) == 1, error)
+    check("и остаётся подписью, а не отдельным вариантом",
+          items[0] == {"content": "saved", "text": "Привет!", "saved_id": 501},
+          str(items))
+
+    # Голосовое и гифка подпись принимают — их и просили прикреплять.
+    for msg_id, what in ((504, "гифке"), (506, "голосовому")):
+        items, error = webapp._variants({"variants": [
+            {"content": "saved", "saved_id": msg_id, "text": "Слушайте"},
+        ]}, known)
+        check(f"подпись к {what} принимается", not error and len(items) == 1,
+              error)
+
+    # А стикеру и кружку Telegram подписи не даёт, и узнать об этом надо
+    # здесь, а не отказом Telegram посреди рассылки.
+    for msg_id, what in ((503, "стикеру"), (505, "кружку")):
+        items, error = webapp._variants({"variants": [
+            {"content": "saved", "saved_id": msg_id, "text": "Подпись"},
+        ]}, known)
+        check(f"подпись к {what} не принимается", bool(error), str(items))
+
+    # Без текста они по-прежнему прекрасно уходят сами по себе.
+    items, error = webapp._variants({"variants": [
+        {"content": "saved", "saved_id": 503, "text": ""},
+    ]}, known)
+    check("стикер без подписи уходит", not error and len(items) == 1, error)
+
+    # Чужой номер сообщения из браузера не принимается: материалы
+    # сверяются с кэшем аккаунта.
+    items, error = webapp._variants({"variants": [
+        {"content": "saved", "saved_id": 999, "text": "чужое"},
+    ]}, known)
+    check("чужой материал отбрасывается", bool(error) or not items, str(items))
+
+    # Длинный текст отбивается и у варианта с медиа.
+    items, error = webapp._variants({"variants": [
+        {"content": "saved", "saved_id": 501, "text": "я" * (config.MAX_TEXT + 1)},
+    ]}, known)
+    check("слишком длинная подпись не проходит", bool(error), str(items))
+
+    # Хранение: текст и медиа живут в одной строке вариантов.
+    account_id = await db.save_account(
+        USER, "+79990000401", crypto.encrypt("s"), tg_id=13,
+        name="С медиа", username=None,
+    )
+    campaign_id = await db.create_campaign(
+        USER, account_id, title="С картинкой", text="", interval=0,
+        source="chats", folder_id=None, chat_ids=[-1001],
+        start_at=int(time.time()),
+    )
+    await db.set_variants(campaign_id, [
+        {"content": "saved", "saved_id": 501, "text": "Подпись к фото"},
+    ])
+    stored = await db.variants(await db.campaign(USER, campaign_id))
+    check("подпись пережила запись в базу",
+          stored[0]["saved_id"] == 501
+          and stored[0]["text"] == "Подпись к фото", str(stored))
+
+    await db.delete_campaign(USER, campaign_id)
+    await db.delete_account(USER, account_id)
+
+    # Правка не должна терять подпись: до этой ветки она раскладывала
+    # варианты на «тексты» и «материалы», и вариант с тем и другим
+    # оставался одной картинкой.
+    js = (Path(__file__).parent / "webapp" / "app.js").read_text(encoding="utf-8")
+    check("правка разбирает варианты с оглядкой на подпись",
+          "function splitVariants(" in js and "if (item.content === 'saved' && !text)" in js)
+    check("сборка вариантов общая для создания и правки",
+          js.count("function packVariants(") == 1
+          and "return packVariants(editing);" in js
+          and "return packVariants(draft);" in js)
+
+
 async def check_joins() -> None:
     print("\nПодписка на чаты с ОП")
     account_id = await db.save_account(
@@ -1972,6 +2056,7 @@ async def run() -> None:
         await check_cast_buttons()
         await check_platega()
         await check_variants()
+        await check_attached_media()
         await check_joins()
         await check_footer_on_media()
         await check_api()

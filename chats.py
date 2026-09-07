@@ -190,6 +190,11 @@ def _material_kind(message) -> str:
         return "sticker"
     if getattr(message, "gif", None):
         return "gif"
+    # Кружок проверяется до видео: у него те же признаки видео, но
+    # подписи Telegram к нему не принимает — а от этого зависит, можно
+    # ли прикрепить его к тексту.
+    if getattr(message, "video_note", None):
+        return "round"
     if getattr(message, "video", None):
         return "video"
     if getattr(message, "voice", None) or getattr(message, "audio", None):

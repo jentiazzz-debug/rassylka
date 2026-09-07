@@ -221,7 +221,10 @@ async def _deliver(client, campaign: db.Campaign, peer) -> None:
     """Отправить в чат то, что задано рассылкой.
 
     Материал — это сообщение из «Избранного» аккаунта, и отправляется он
-    копированием оттуда. Так переживает всё, что человек в него положил:
+    копированием оттуда. Если у варианта есть и свой текст, он уходит
+    подписью к этому медиа: фото и слова приходят в чат одним
+    сообщением, а не двумя — два подряд и выглядят навязчивее, и вдвое
+    быстрее упираются в лимиты Telegram. Так переживает всё, что человек в него положил:
     премиум-эмодзи и стикеры, цитаты, жирный с курсивом, фото, гифки,
     видео. Разбирать и пересобирать это вручную бессмысленно — половина
     сущностей всё равно потерялась бы.
@@ -245,14 +248,22 @@ async def _deliver(client, campaign: db.Campaign, peer) -> None:
     if source is None:
         raise MaterialGone()
 
-    if getattr(source, "sticker", None) is not None:
-        # У стикера подписи не бывает — Telegram её не примет. Значит, и
-        # подпись бесплатного тарифа к нему не пристаёт: рассылка одними
-        # стикерами уходит без неё.
+    if (getattr(source, "sticker", None) is not None
+            or getattr(source, "video_note", None) is not None):
+        # У стикера и кружка подписи не бывает — Telegram её не примет.
+        # Значит, и подпись бесплатного тарифа к ним не пристаёт:
+        # рассылка одними стикерами уходит без неё.
         await client.send_file(peer, source.media)
         return
 
-    caption = await compose(campaign.user_id, source.message or "")
+    # Свой текст у варианта старше подписи, с которой материал лежит в
+    # «Избранном»: человек написал его именно для этой рассылки. Свои
+    # сущности разметки к чужому тексту, понятно, не подходят — вместе
+    # с текстом отбрасываются и они.
+    own = (variant.get("text") or "").strip()
+    entities = None if own else (source.entities or None)
+    caption = await compose(campaign.user_id, own or source.message or "")
+
     if source.media is not None:
         # Медиа переотправляется тем же объектом, без скачивания и
         # повторной загрузки: файл уже лежит у Telegram, и аккаунт имеет
@@ -261,7 +272,7 @@ async def _deliver(client, campaign: db.Campaign, peer) -> None:
             peer,
             source.media,
             caption=caption or None,
-            formatting_entities=source.entities or None,
+            formatting_entities=entities,
             parse_mode=None,
         )
         return
@@ -269,7 +280,7 @@ async def _deliver(client, campaign: db.Campaign, peer) -> None:
     await client.send_message(
         peer,
         caption,
-        formatting_entities=source.entities or None,
+        formatting_entities=entities,
         parse_mode=None,
     )
 
