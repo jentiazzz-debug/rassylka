@@ -55,6 +55,7 @@ import db
 import keyboards
 import richtext
 import texts
+import tickets
 
 log = logging.getLogger("rassylka.admin")
 
@@ -80,6 +81,12 @@ class Setup(StatesGroup):
     banner = State()
 
 
+class Answer(StatesGroup):
+    """Ответ на тикет: владелец пишет следующим сообщением."""
+
+    body = State()
+
+
 class Cast(StatesGroup):
     """Рассылка владельца: сообщение, потом кнопки, потом подтверждение."""
 
@@ -103,10 +110,11 @@ def panel() -> InlineKeyboardBuilder:
     builder.button(text="✏️ Приветствие", callback_data="a:greeting")
     builder.button(text="🔘 Кнопки меню", callback_data="a:buttons")
     builder.button(text="📱 Баннер в приложении", callback_data="a:banner")
+    builder.button(text="🎫 Тикеты", callback_data="a:tickets")
     builder.button(text="📣 Рассылка по людям", callback_data="a:cast")
     builder.button(text="👀 Предпросмотр", callback_data="a:preview")
     builder.button(text="♻️ Сбросить оформление", callback_data="a:reset")
-    builder.adjust(2, 2, 2)
+    builder.adjust(2, 2, 2, 1)
     return builder
 
 
@@ -132,10 +140,18 @@ async def _state_text() -> str:
     )
 
 
+async def _tickets_line() -> str:
+    waiting = await db.count_open_tickets()
+    return f"\n\n🎫 Ждут ответа: <b>{waiting}</b>" if waiting else ""
+
+
 @router.message(Command("admin"))
 async def open_panel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(await _state_text(), reply_markup=panel().as_markup())
+    await message.answer(
+        await _state_text() + await _tickets_line(),
+        reply_markup=panel().as_markup(),
+    )
 
 
 @router.callback_query(F.data == "a:home")
@@ -367,6 +383,132 @@ async def save_banner(message: Message, state: FSMContext) -> None:
         "✅ Баннер сохранён — откройте приложение и обновите его.",
         reply_markup=panel().as_markup(),
     )
+
+
+# --- тикеты -----------------------------------------------------------
+#
+# Отвечать можно прямо здесь: список открытых, тикет целиком, кнопка
+# «Ответить». Ответ уходит человеку в личку и остаётся в приложении —
+# там он его и завёл, там и ищет.
+
+
+def _ticket_title(row: dict) -> str:
+    who = row.get("username") or row.get("name") or row.get("user_id")
+    return f"#{row['id']} · {row['subject'][:28]} · {who}"
+
+
+@router.callback_query(F.data == "a:tickets")
+async def ticket_list(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    waiting = await db.open_tickets()
+
+    builder = InlineKeyboardBuilder()
+    for row in waiting:
+        builder.button(text=_ticket_title(row), callback_data=f"a:t:{row['id']}")
+    builder.button(text="← Назад", callback_data="a:home")
+    builder.adjust(*([1] * (len(waiting) + 1)))
+
+    text = (
+        "🎫 <b>Обращения в поддержку</b>\n\n"
+        + ("Сначала те, что ждут дольше всех."
+           if waiting else "Всё разобрано — открытых обращений нет.")
+    )
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+
+def _ticket_keys(ticket_id: int, status: str) -> InlineKeyboardBuilder:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💬 Ответить", callback_data=f"a:t:reply:{ticket_id}")
+    if status != "closed":
+        builder.button(text="✅ Закрыть", callback_data=f"a:t:close:{ticket_id}")
+    builder.button(text="← К списку", callback_data="a:tickets")
+    builder.adjust(2, 1)
+    return builder
+
+
+@router.callback_query(F.data.startswith("a:t:") & ~F.data.contains("reply")
+                       & ~F.data.contains("close"))
+async def ticket_open(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    ticket_id = int(callback.data.split(":")[2])
+    found = await db.ticket(ticket_id)
+    if found is None:
+        await callback.answer("Тикет не найден", show_alert=True)
+        return
+
+    card = await db.user_card(int(found["user_id"])) or {}
+    person = card.get("user") or {"user_id": found["user_id"]}
+    await callback.answer()
+    await callback.message.answer(
+        f"🎫 <b>Тикет #{ticket_id}</b> · {found['status']}\n"
+        f"{tickets._who(person)}\n\n"
+        f"<b>{found['subject']}</b>"
+    )
+
+    # Переписка целиком, по сообщению за раз: вложения иначе не
+    # показать, а без них половина обращений бессмысленна.
+    for message in await db.ticket_messages(ticket_id):
+        who = "👤" if message["author"] == "user" else "💬"
+        await tickets.deliver(callback.bot, callback.message.chat.id, message, who)
+
+    await callback.message.answer(
+        "Что делать с обращением?",
+        reply_markup=_ticket_keys(ticket_id, found["status"]).as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("a:t:reply:"))
+async def ticket_reply_ask(callback: CallbackQuery, state: FSMContext) -> None:
+    ticket_id = int(callback.data.split(":")[3])
+    await state.set_state(Answer.body)
+    await state.update_data(ticket_id=ticket_id)
+    await callback.message.answer(
+        f"💬 <b>Ответ на тикет #{ticket_id}</b>\n\n"
+        "Напишите следующим сообщением — можно с фото, видео или "
+        "голосовым. Человек получит его в личку от бота и увидит в "
+        "приложении.",
+        reply_markup=_cancel().as_markup(),
+    )
+    await callback.answer()
+
+
+@router.message(Answer.body)
+async def ticket_reply_send(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    ticket_id = int(data.get("ticket_id") or 0)
+    await state.clear()
+
+    kind, file_id, _ = tickets.file_from(message)
+    body = (message.text or message.caption or "").strip()
+    if not body and not file_id:
+        await message.answer("Пустой ответ отправлять не буду.")
+        return
+
+    if not await tickets.admin_reply(message.bot, ticket_id, body, kind, file_id):
+        await message.answer("Тикет не найден.")
+        return
+
+    await message.answer(
+        f"✅ Ответ на #{ticket_id} отправлен.",
+        reply_markup=_ticket_keys(ticket_id, "answered").as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("a:t:close:"))
+async def ticket_close(callback: CallbackQuery) -> None:
+    ticket_id = int(callback.data.split(":")[3])
+    await db.set_ticket_status(ticket_id, "closed")
+    found = await db.ticket(ticket_id)
+    if found is not None:
+        try:
+            await callback.bot.send_message(
+                int(found["user_id"]), texts.ticket_closed(ticket_id)
+            )
+        except Exception:
+            pass
+    await callback.answer("Закрыт")
+    await callback.message.answer(f"✅ Тикет #{ticket_id} закрыт.")
 
 
 # --- рассылка по пользователям бота -----------------------------------

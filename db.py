@@ -283,6 +283,44 @@ CREATE INDEX IF NOT EXISTS idx_joins_chat ON joins(account_id, chat_id, created_
 -- Движения по монетам. Журнал, а не только баланс: человек должен
 -- видеть, откуда монеты взялись и куда делись, а мы — уметь разобрать
 -- спор, не гадая по остатку.
+-- Тикеты поддержки. Переписка живёт здесь, а не в личке с ботом,
+-- намеренно: в личке она перемешивается с уведомлениями о рассылках и
+-- теряется, а владельцу нужен список «на что ещё не ответили» —
+-- по чату его не составить.
+CREATE TABLE IF NOT EXISTS tickets (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    subject     TEXT    NOT NULL,
+    -- open — ждёт ответа владельца, answered — владелец ответил,
+    -- closed — закрыт. Отдельного «в работе» нет: для одного человека
+    -- на поддержке это лишний статус, который никто не переключает.
+    status      TEXT    NOT NULL DEFAULT 'open',
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets(user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_tickets_open ON tickets(status, updated_at);
+
+-- Сообщения тикета. Медиа не хранится у нас: бот пересылает файл себе
+-- же и запоминает file_id — по нему Telegram отдаёт файл кому угодно и
+-- сколько угодно раз, а на нашем диске не остаётся ничего.
+CREATE TABLE IF NOT EXISTS ticket_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id  INTEGER NOT NULL,
+    -- user | admin
+    author     TEXT    NOT NULL,
+    text       TEXT    NOT NULL DEFAULT '',
+    -- photo | video | animation | voice | audio | document — чем слать
+    -- обратно. Пусто — сообщение без вложения.
+    file_kind  TEXT,
+    file_id    TEXT,
+    file_name  TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_messages ON ticket_messages(ticket_id, id);
+
 CREATE TABLE IF NOT EXISTS coin_ops (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL,
@@ -1869,6 +1907,111 @@ async def all_recipients() -> list[dict]:
         "SELECT user_id, username, name FROM users ORDER BY seen_at DESC"
     )
     return [dict(row) for row in rows]
+
+
+# --- тикеты поддержки -------------------------------------------------
+
+
+async def create_ticket(user_id: int, subject: str) -> int:
+    now = int(time.time())
+    cursor = await _conn().execute(
+        "INSERT INTO tickets (user_id, subject, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, subject, now, now),
+    )
+    await _conn().commit()
+    return int(cursor.lastrowid)
+
+
+async def add_ticket_message(ticket_id: int, author: str, text: str,
+                             file_kind: str | None = None,
+                             file_id: str | None = None,
+                             file_name: str | None = None) -> int:
+    """Сообщение в тикет. Заодно двигает статус и время последней жизни.
+
+    Статус ведём здесь, а не отдельным вызовом: он полностью
+    определяется тем, кто написал последним, и разъехаться с перепиской
+    не должен ни при какой ошибке.
+    """
+    now = int(time.time())
+    cursor = await _conn().execute(
+        "INSERT INTO ticket_messages (ticket_id, author, text, file_kind, "
+        "file_id, file_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (ticket_id, author, text, file_kind, file_id, file_name, now),
+    )
+    await _conn().execute(
+        "UPDATE tickets SET updated_at = ?, status = ? WHERE id = ?",
+        (now, "answered" if author == "admin" else "open", ticket_id),
+    )
+    await _conn().commit()
+    return int(cursor.lastrowid)
+
+
+async def ticket(ticket_id: int, user_id: int | None = None) -> dict | None:
+    """Тикет. С user_id — только свой: так ручки мини-аппа не отдадут чужой."""
+    if user_id is None:
+        row = await _fetchone("SELECT * FROM tickets WHERE id = ?", (ticket_id,))
+    else:
+        row = await _fetchone(
+            "SELECT * FROM tickets WHERE id = ? AND user_id = ?",
+            (ticket_id, user_id),
+        )
+    return dict(row) if row else None
+
+
+async def ticket_messages(ticket_id: int) -> list[dict]:
+    rows = await _fetchall(
+        "SELECT * FROM ticket_messages WHERE ticket_id = ? ORDER BY id",
+        (ticket_id,),
+    )
+    return [dict(row) for row in rows]
+
+
+async def tickets_of(user_id: int) -> list[dict]:
+    rows = await _fetchall(
+        "SELECT * FROM tickets WHERE user_id = ? ORDER BY updated_at DESC",
+        (user_id,),
+    )
+    return [dict(row) for row in rows]
+
+
+async def open_tickets(limit: int = 30) -> list[dict]:
+    """Тикеты, ждущие владельца: сначала те, что дольше всех ждут.
+
+    Порядок обратный обычному: в списке «что разобрать» первым должно
+    стоять самое старое обращение, а не самое свежее.
+    """
+    rows = await _fetchall(
+        "SELECT t.*, u.username, u.name FROM tickets t "
+        "LEFT JOIN users u ON u.user_id = t.user_id "
+        "WHERE t.status = 'open' ORDER BY t.updated_at LIMIT ?",
+        (limit,),
+    )
+    return [dict(row) for row in rows]
+
+
+async def count_open_tickets() -> int:
+    row = await _fetchone(
+        "SELECT COUNT(*) AS n FROM tickets WHERE status = 'open'"
+    )
+    return int(row["n"]) if row else 0
+
+
+async def count_tickets_today(user_id: int) -> int:
+    """Сколько тикетов человек завёл за сутки — на случай, если завёлся."""
+    row = await _fetchone(
+        "SELECT COUNT(*) AS n FROM tickets WHERE user_id = ? AND created_at > ?",
+        (user_id, int(time.time()) - 86400),
+    )
+    return int(row["n"]) if row else 0
+
+
+async def set_ticket_status(ticket_id: int, status: str) -> None:
+    await _conn().execute(
+        "UPDATE tickets SET status = ?, updated_at = ? WHERE id = ?",
+        (status, int(time.time()), ticket_id),
+    )
+    await _conn().commit()
 
 
 async def stats() -> dict[str, int]:

@@ -447,6 +447,14 @@ def watch_material_gone(watch) -> str:
     )
 
 
+def ticket_closed(ticket_id: int) -> str:
+    return (
+        f"✅ <b>Обращение #{ticket_id} закрыто</b>\n\n"
+        "Если вопрос остался — заведите новое в приложении, раздел "
+        "«Поддержка». Переписка по закрытому остаётся видна там же."
+    )
+
+
 def watch_too_expensive(watch, stars: int) -> str:
     return (
         f"💫 <b>Автокомментарии в «{escape(watch.title)}» на паузе</b>\n\n"

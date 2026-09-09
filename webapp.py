@@ -41,6 +41,7 @@ import payments
 import platega
 import tdata
 import texts
+import tickets
 
 log = logging.getLogger("rassylka.webapp")
 
@@ -216,6 +217,7 @@ async def _state(user_id: int) -> dict:
         ],
         "watches": await _watch_cards(user_id),
         "paid_max_stars": await db.paid_max_stars(user_id),
+        "tickets": [_ticket_card(row) for row in await db.tickets_of(user_id)],
         "limits": {
             "max_accounts": config.MAX_ACCOUNTS,
             "trial_days": config.TRIAL_DAYS,
@@ -693,6 +695,212 @@ async def api_material_upload(request: web.Request) -> web.Response:
     finally:
         if saved is not None:
             saved.unlink(missing_ok=True)
+
+
+# --- поддержка --------------------------------------------------------
+
+
+def _ticket_card(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "subject": row["subject"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _ticket_message(row: dict) -> dict:
+    return {
+        "author": row["author"],
+        "text": row["text"],
+        "file_kind": row["file_kind"],
+        "file_name": row["file_name"],
+        "created_at": row["created_at"],
+    }
+
+
+@authed
+async def api_tickets(request: web.Request, user: dict, data: dict) -> web.Response:
+    user_id = int(user["id"])
+    found = await db.tickets_of(user_id)
+    return web.json_response(
+        {"ok": True, "tickets": [_ticket_card(row) for row in found]}
+    )
+
+
+@authed
+async def api_ticket_read(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    user_id = int(user["id"])
+    ticket_id = _int(data.get("ticket_id"))
+    # user_id в запросе к базе, а не проверкой после: чужой тикет не
+    # должен даже читаться, а забыть про сравнение проще, чем про аргумент.
+    found = await db.ticket(ticket_id, user_id)
+    if found is None:
+        return _fail("Обращение не найдено.")
+    return web.json_response({
+        "ok": True,
+        "ticket": _ticket_card(found),
+        "messages": [
+            _ticket_message(row) for row in await db.ticket_messages(ticket_id)
+        ],
+    })
+
+
+@authed
+async def api_ticket_close(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    user_id = int(user["id"])
+    found = await db.ticket(_int(data.get("ticket_id")), user_id)
+    if found is None:
+        return _fail("Обращение не найдено.")
+    await db.set_ticket_status(found["id"], "closed")
+    return web.json_response({
+        "ok": True,
+        "tickets": [_ticket_card(row) for row in await db.tickets_of(user_id)],
+    })
+
+
+async def api_ticket_send(request: web.Request) -> web.Response:
+    """Новый тикет или ответ в существующий — вместе с вложением.
+
+    Одна ручка на оба случая и без декоратора: тело здесь multipart, а
+    не JSON. Разделять их на две значило бы дважды написать приём файла
+    ради одного различающегося поля.
+    """
+    user = parse_init_data(request.headers.get(INIT_HEADER, ""))
+    if user is None:
+        return web.json_response(
+            {"ok": False, "error": "Откройте приложение из бота заново."},
+            status=401,
+        )
+    user_id = int(user["id"])
+    await db.ensure_user(user_id, user.get("username"), None)
+
+    if _bot is None:
+        return _fail("Поддержка сейчас недоступна. Напишите позже.")
+
+    limit = config.MAX_UPLOAD_MB * 1024 * 1024
+    subject = body = ""
+    ticket_id = 0
+    saved: Path | None = None
+    filename = ""
+
+    try:
+        reader = await request.multipart()
+    except Exception:
+        return _fail("Сообщение не дошло. Попробуйте ещё раз.")
+
+    try:
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if part.name == "subject":
+                subject = (await part.text()).strip()[:tickets.MAX_SUBJECT]
+                continue
+            if part.name == "body":
+                body = (await part.text()).strip()[:tickets.MAX_BODY]
+                continue
+            if part.name == "ticket_id":
+                ticket_id = _int(await part.text())
+                continue
+            if part.name != "file":
+                continue
+
+            filename = (part.filename or "file")[:96]
+            handle, path = tempfile.mkstemp(
+                suffix=Path(filename).suffix[:12], dir=config.DATA_DIR
+            )
+            saved = Path(path)
+            size = 0
+            with os.fdopen(handle, "wb") as out:
+                while True:
+                    chunk = await part.read_chunk(256 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > limit:
+                        return _fail(f"Файл больше {config.MAX_UPLOAD_MB} МБ.")
+                    out.write(chunk)
+
+        if not body and saved is None:
+            return _fail("Опишите, что случилось.")
+
+        file_kind = file_id = None
+        if saved is not None:
+            # Файл уходит владельцу и превращается в file_id: по нему
+            # Telegram потом отдаст его сколько угодно раз, а у нас на
+            # диске не останется ничего.
+            file_kind, file_id = await _stash_file(saved, filename)
+            if file_id is None:
+                return _fail("Файл не отправился. Попробуйте другой.")
+
+        card = await db.user_card(user_id) or {}
+        person = card.get("user") or {"user_id": user_id}
+
+        if ticket_id:
+            found = await db.ticket(ticket_id, user_id)
+            if found is None:
+                return _fail("Обращение не найдено.")
+            if found["status"] == "closed":
+                return _fail("Обращение закрыто. Заведите новое.")
+            await tickets.user_reply(
+                _bot, person, ticket_id, body, file_kind, file_id, filename or None
+            )
+        else:
+            if not subject:
+                return _fail("Напишите тему обращения.")
+            if await db.count_tickets_today(user_id) >= tickets.DAILY_LIMIT:
+                return _fail(
+                    f"Больше {tickets.DAILY_LIMIT} обращений в сутки завести "
+                    "нельзя. Допишите в уже открытое."
+                )
+            ticket_id = await tickets.open_ticket(
+                _bot, person, subject, body, file_kind, file_id,
+                filename or None,
+            )
+
+        return web.json_response({
+            "ok": True,
+            "ticket_id": ticket_id,
+            "tickets": [_ticket_card(row) for row in await db.tickets_of(user_id)],
+        })
+    finally:
+        if saved is not None:
+            saved.unlink(missing_ok=True)
+
+
+async def _stash_file(path: Path, filename: str) -> tuple[str | None, str | None]:
+    """Отправить файл владельцу и вернуть (тип, file_id).
+
+    Отправляем первому владельцу из списка: файл нужен и ему на глаза, и
+    нам ради file_id — двух дел одной отправкой. Если владельцев
+    несколько, остальные увидят его вместе с текстом обращения.
+    """
+    from aiogram.types import FSInputFile
+
+    target = next(iter(config.ADMIN_IDS), 0)
+    if not target:
+        return None, None
+
+    upload = FSInputFile(str(path), filename=filename)
+    lower = filename.lower()
+    if lower.endswith((".jpg", ".jpeg", ".png", ".webp")):
+        sent = await _bot.send_photo(target, upload)
+    elif lower.endswith((".mp4", ".mov")):
+        sent = await _bot.send_video(target, upload)
+    elif lower.endswith(".gif"):
+        sent = await _bot.send_animation(target, upload)
+    elif lower.endswith((".ogg", ".oga")):
+        sent = await _bot.send_voice(target, upload)
+    else:
+        sent = await _bot.send_document(target, upload)
+
+    return tickets.file_from(sent)[:2]
 
 
 # --- чаты и папки -----------------------------------------------------
@@ -1490,6 +1698,10 @@ def build() -> web.Application:
             web.post("/api/chats", api_chats),
             web.post("/api/chats/scan", api_chats_scan),
             web.post("/api/paid-limit", api_paid_limit),
+            web.post("/api/tickets", api_tickets),
+            web.post("/api/ticket/read", api_ticket_read),
+            web.post("/api/ticket/close", api_ticket_close),
+            web.post("/api/ticket/send", api_ticket_send),
             web.post("/api/watch/create", api_watch_create),
             web.post("/api/watch/edit", api_watch_edit),
             web.post("/api/watch/toggle", api_watch_toggle),

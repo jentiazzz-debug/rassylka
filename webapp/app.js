@@ -35,7 +35,7 @@ function icon(name, cls) {
 
 const SCREENS = [
   'loading', 'main', 'phone', 'code', 'password', 'done', 'tdata', 'new',
-  'edit', 'log', 'topup', 'watch', 'outside',
+  'edit', 'log', 'topup', 'watch', 'ticket', 'outside',
 ];
 
 /** Разделы главного экрана. */
@@ -934,6 +934,7 @@ function renderMain() {
   renderCampaigns();
   renderWatches();
   renderPaidLimit();
+  renderTickets();
   renderProfile();
   setPane(pane);
   show('main');
@@ -1395,6 +1396,202 @@ function jumpStep(index) {
   }
   goStep(index);
 }
+
+// --- поддержка ---------------------------------------------------------
+
+/** Что сейчас открыто: новое обращение (id = 0) или существующее. */
+let ticket = null;
+
+const TICKET_STATUS = {
+  open: 'ждёт ответа',
+  answered: 'есть ответ',
+  closed: 'закрыт',
+};
+
+function renderTickets() {
+  const box = $('tickets');
+  const list = state.tickets || [];
+  box.textContent = '';
+  $('tickets-empty').hidden = list.length > 0;
+
+  for (const item of list) {
+    const row = document.createElement('button');
+    row.className = 'row';
+    const body = document.createElement('div');
+    body.className = 'row-body';
+    const title = document.createElement('div');
+    title.className = 'row-title';
+    title.textContent = '#' + item.id + ' · ' + item.subject;
+    const note = document.createElement('div');
+    note.className = 'row-note';
+    note.textContent = TICKET_STATUS[item.status] || item.status;
+    body.append(title, note);
+    row.appendChild(body);
+    // Ответ поддержки заметен из списка: иначе за ним пришлось бы
+    // заходить в каждое обращение по очереди.
+    if (item.status === 'answered') {
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = 'ответ';
+      row.appendChild(badge);
+    }
+    row.appendChild(icon('chevron', 'ic-s'));
+    row.onclick = () => openTicket(item);
+    box.appendChild(row);
+  }
+}
+
+async function openTicket(item) {
+  ticket = { id: item ? item.id : 0, file: null, status: item ? item.status : '' };
+  $('ticket-head').textContent = item
+    ? '#' + item.id + ' · ' + item.subject : 'Новое обращение';
+  $('ticket-subject-box').hidden = Boolean(item);
+  $('ticket-subject').value = '';
+  $('ticket-body').value = '';
+  $('ticket-send').textContent = item ? 'Ответить' : 'Отправить';
+  $('ticket-close').hidden = !item || item.status === 'closed';
+  fail('ticket-err', '');
+  renderTicketFile();
+  $('ticket-thread').hidden = !item;
+  show('ticket');
+
+  if (!item) return;
+  hintInto($('ticket-thread'), 'Загружаем…');
+  const result = await api('/api/ticket/read', { ticket_id: item.id });
+  if (!result.ok) return hintInto($('ticket-thread'), result.error);
+  renderThread(result.messages || []);
+  if (result.ticket.status === 'closed') {
+    $('ticket-body').disabled = true;
+    $('ticket-send').disabled = true;
+    $('ticket-body').placeholder = 'Обращение закрыто';
+  } else {
+    $('ticket-body').disabled = false;
+    $('ticket-send').disabled = false;
+  }
+}
+
+function renderThread(messages) {
+  const box = $('ticket-thread');
+  box.textContent = '';
+  for (const message of messages) {
+    const row = document.createElement('div');
+    row.className = 'variant';
+    const body = document.createElement('div');
+    body.className = 'row-body';
+
+    const who = document.createElement('div');
+    who.className = 'row-note';
+    who.textContent = (message.author === 'admin' ? 'Поддержка' : 'Вы')
+      + ' · ' + dateText(message.created_at);
+    body.appendChild(who);
+
+    if (message.text) {
+      const text = document.createElement('div');
+      text.style.whiteSpace = 'pre-wrap';
+      text.textContent = message.text;
+      body.appendChild(text);
+    }
+    // Само вложение здесь не показываем: файл живёт у Telegram, и
+    // забрать его можно в переписке с ботом — там он и приходит.
+    if (message.file_kind) {
+      const file = document.createElement('div');
+      file.className = 'row-note';
+      file.textContent = '📎 ' + (message.file_name || message.file_kind)
+        + ' — в чате с ботом';
+      body.appendChild(file);
+    }
+    row.appendChild(body);
+    box.appendChild(row);
+  }
+}
+
+function renderTicketFile() {
+  const row = $('ticket-file-row');
+  row.textContent = '';
+  if (ticket.file) {
+    row.appendChild(icon('file', 'ic-s'));
+    const name = document.createElement('span');
+    name.className = 'attach-name';
+    name.textContent = ticket.file.name;
+    row.appendChild(name);
+    const drop = document.createElement('button');
+    drop.className = 'attach-drop';
+    drop.appendChild(icon('x', 'ic-s'));
+    drop.onclick = () => { ticket.file = null; renderTicketFile(); };
+    row.appendChild(drop);
+    return;
+  }
+  const add = document.createElement('button');
+  add.className = 'attach-add';
+  add.appendChild(icon('clip', 'ic-s'));
+  add.append('Прикрепить файл');
+  add.onclick = pickTicketFile;
+  row.appendChild(add);
+}
+
+function pickTicketFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.onchange = () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const limit = (state.limits.max_upload_mb || 32) * 1024 * 1024;
+    if (file.size > limit) {
+      return alertBox('Файл больше ' + state.limits.max_upload_mb + ' МБ.');
+    }
+    ticket.file = file;
+    renderTicketFile();
+  };
+  input.click();
+}
+
+async function sendTicket(button) {
+  fail('ticket-err', '');
+  const subject = $('ticket-subject').value.trim();
+  const body = $('ticket-body').value.trim();
+  if (!ticket.id && !subject) return fail('ticket-err', 'Напишите тему.');
+  if (!body && !ticket.file) {
+    return fail('ticket-err', 'Опишите, что случилось.');
+  }
+
+  const form = new FormData();
+  if (ticket.id) form.append('ticket_id', String(ticket.id));
+  else form.append('subject', subject);
+  form.append('body', body);
+  if (ticket.file) form.append('file', ticket.file, ticket.file.name);
+
+  const done = busy(button, 'Отправляем…');
+  let result;
+  try {
+    const answer = await fetch('/api/ticket/send', {
+      method: 'POST',
+      headers: { 'X-Init-Data': (tg && tg.initData) || '' },
+      body: form,
+    });
+    result = await answer.json();
+  } catch (error) {
+    result = { ok: false, error: 'Не дошло. Попробуйте ещё раз.' };
+  }
+  done();
+  if (!result.ok) return fail('ticket-err', result.error);
+
+  state.tickets = result.tickets;
+  renderTickets();
+  haptic('success');
+  alertBox(ticket.id
+    ? 'Сообщение отправлено — ответ придёт в личку от бота.'
+    : 'Обращение #' + result.ticket_id + ' создано. Ответим в личке от бота.');
+  await refresh();
+}
+
+async function closeTicket() {
+  const result = await api('/api/ticket/close', { ticket_id: ticket.id });
+  if (!result.ok) return alertBox(result.error);
+  state.tickets = result.tickets;
+  renderTickets();
+  await refresh();
+}
+
 
 // --- автокомментарии под постами ---------------------------------------
 
@@ -2571,6 +2768,11 @@ function wire() {
   $('admin-query').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') adminFind();
   });
+  $('add-ticket').onclick = () => openTicket(null);
+  $('ticket-attach').onclick = pickTicketFile;
+  $('ticket-send').onclick = (event) => sendTicket(event.currentTarget);
+  $('ticket-close').onclick = closeTicket;
+
   $('paid-limit-save').onclick = (event) => savePaidLimit(event.currentTarget);
   $('paid-limit').onkeydown = (event) => {
     if (event.key === 'Enter') savePaidLimit($('paid-limit-save'));

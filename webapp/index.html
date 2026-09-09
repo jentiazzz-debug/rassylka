@@ -253,6 +253,14 @@
       в боте: это ваши деньги, и тратить их молча нельзя.
     </p>
 
+    <h2 class="section-title">Поддержка</h2>
+    <div class="panel" id="tickets"></div>
+    <p id="tickets-empty" class="hint pad" hidden>
+      Обращений нет. Если что-то не работает или непонятно — напишите,
+      ответ придёт сюда и в личку от бота.
+    </p>
+    <button id="add-ticket" class="btn ghost">Написать в поддержку</button>
+
     <h2 class="section-title">Подписка за монеты</h2>
     <div class="panel" id="plans"></div>
     <p class="hint small pad">
@@ -540,6 +548,41 @@
       <button class="btn ghost" data-home>Отмена</button>
       <button id="watch-save" class="btn primary">Включить</button>
     </div>
+  </section>
+
+  <!-- Обращение. Один экран на создание и на переписку: отличаются
+       они только полем темы, и разносить их по двум значило бы дважды
+       написать одно и то же. -->
+  <section id="screen-ticket" class="screen" hidden>
+    <h2 class="section-title" id="ticket-head">Новое обращение</h2>
+
+    <div id="ticket-subject-box">
+      <input class="field" id="ticket-subject" maxlength="120"
+             placeholder="Тема: коротко, о чём речь">
+    </div>
+
+    <div class="panel" id="ticket-thread" hidden></div>
+
+    <textarea class="field area" id="ticket-body" maxlength="2000"
+              placeholder="Что случилось. Чем подробнее, тем быстрее разберёмся"></textarea>
+
+    <div class="variant-attach" id="ticket-file-row">
+      <button class="attach-add" id="ticket-attach">
+        <svg class="ic ic-s" viewBox="0 0 24 24"><use href="#i-clip"/></svg>
+        Прикрепить файл
+      </button>
+    </div>
+
+    <p id="ticket-err" class="err pad" hidden></p>
+    <div class="nav-row">
+      <button class="btn ghost" data-home>Назад</button>
+      <button id="ticket-send" class="btn primary">Отправить</button>
+    </div>
+    <button class="btn ghost" id="ticket-close" hidden>Вопрос решён, закрыть</button>
+    <p class="hint small pad">
+      Ответ придёт в личку от бота и появится здесь. Скриншот или запись
+      экрана помогают сильнее любого описания.
+    </p>
   </section>
 
   <section id="screen-edit" class="screen" hidden>

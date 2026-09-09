@@ -57,6 +57,7 @@ import richtext  # noqa: E402
 import platega  # noqa: E402
 import tdata  # noqa: E402
 import texts  # noqa: E402
+import tickets  # noqa: E402
 import xrocket  # noqa: E402
 import webapp  # noqa: E402
 
@@ -1959,6 +1960,100 @@ async def check_attached_media() -> None:
           and "return packVariants(draft);" in js)
 
 
+async def check_tickets() -> None:
+    print("\nТикеты поддержки")
+    await db.ensure_user(USER, "test", "Тест Тестов")
+    await db.ensure_user(OTHER, None, None)
+
+    first = await db.create_ticket(USER, "Не подключается аккаунт")
+    await db.add_ticket_message(first, "user", "Пишет «не удалось запросить код».")
+
+    found = await db.ticket(first, USER)
+    check("тикет завёлся", found is not None and found["status"] == "open",
+          str(found))
+    check("чужой тикет не читается", await db.ticket(first, OTHER) is None)
+
+    # Статус ведёт переписка: ответил владелец — тикет больше не ждёт.
+    await db.add_ticket_message(first, "admin", "Проверьте ключи в .env.")
+    check("после ответа тикет не ждёт",
+          (await db.ticket(first))["status"] == "answered")
+    await db.add_ticket_message(first, "user", "Ключи те же.")
+    check("написал человек — снова ждёт",
+          (await db.ticket(first))["status"] == "open")
+
+    messages = await db.ticket_messages(first)
+    check("переписка в порядке появления",
+          [m["author"] for m in messages] == ["user", "admin", "user"],
+          str([m["author"] for m in messages]))
+
+    # Список для владельца: первым то, что ждёт дольше всех.
+    second = await db.create_ticket(USER, "Второе обращение")
+    await db.add_ticket_message(second, "user", "И ещё вопрос.")
+    await db._conn().execute(
+        "UPDATE tickets SET updated_at = ? WHERE id = ?",
+        (int(time.time()) - 3600, first),
+    )
+    await db._conn().commit()
+    waiting = await db.open_tickets()
+    check("в очереди сначала самые старые",
+          [row["id"] for row in waiting][:2] == [first, second],
+          str([row["id"] for row in waiting]))
+    check("в очереди видно, кто написал",
+          waiting[0].get("username") == "test", str(waiting[0].get("username")))
+    check("счётчик открытых считает", await db.count_open_tickets() >= 2)
+
+    # Закрытый уходит из очереди, но остаётся у человека.
+    await db.set_ticket_status(second, "closed")
+    waiting = await db.open_tickets()
+    check("закрытый из очереди уходит",
+          not any(row["id"] == second for row in waiting))
+    mine = await db.tickets_of(USER)
+    check("но в своём списке остаётся",
+          any(row["id"] == second for row in mine), str(len(mine)))
+
+    check("суточный счётчик считает",
+          await db.count_tickets_today(USER) == 2,
+          str(await db.count_tickets_today(USER)))
+
+    # Тип вложения: у гифки есть и animation, и document, у голосового —
+    # и voice, и document. Общий тип должен победить, иначе гифка уедет
+    # обратно файлом, а голосовое станет неслушаемым.
+    class Fake:
+        photo = None
+        video = None
+        voice = None
+        audio = None
+
+        def __init__(self, **kw):
+            self.animation = None
+            self.document = None
+            for key, value in kw.items():
+                setattr(self, key, value)
+
+    class Item:
+        def __init__(self, file_id):
+            self.file_id = file_id
+            self.file_name = "f"
+
+    gif = Fake(animation=Item("gif-id"), document=Item("doc-id"))
+    check("гифка опознаётся гифкой",
+          tickets.file_from(gif)[:2] == ("animation", "gif-id"),
+          str(tickets.file_from(gif)))
+    voice = Fake(voice=Item("voice-id"), document=Item("doc-id"))
+    check("голосовое опознаётся голосовым",
+          tickets.file_from(voice)[:2] == ("voice", "voice-id"),
+          str(tickets.file_from(voice)))
+    plain = Fake()
+    check("без вложения — ничего", tickets.file_from(plain) == (None, None, None))
+
+    # Все типы, которые принимаем, бот умеет слать: иначе вложение
+    # пропало бы уже у владельца.
+    from aiogram import Bot
+
+    for kind, method in tickets.KINDS.items():
+        check(f"бот умеет {method} для {kind}", hasattr(Bot, method))
+
+
 async def check_paid_chats() -> None:
     print("\nПлатные чаты и загрузка медиа")
     account_id = await db.save_account(
@@ -2280,6 +2375,10 @@ def check_wiring() -> None:
         "POST /api/invoice/crypto",
         "POST /api/invoice/xrocket",
         "POST /api/paid-limit",
+        "POST /api/tickets",
+        "POST /api/ticket/read",
+        "POST /api/ticket/send",
+        "POST /api/ticket/close",
         "POST /api/material/upload",
         "POST /api/watch/create",
         "POST /api/watch/edit",
@@ -2320,6 +2419,7 @@ async def run() -> None:
         await check_platega()
         await check_variants()
         await check_attached_media()
+        await check_tickets()
         await check_paid_chats()
         await check_watches()
         await check_joins()
