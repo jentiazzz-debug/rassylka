@@ -49,6 +49,7 @@ import comments  # noqa: E402
 import crypto  # noqa: E402
 import cryptobot  # noqa: E402
 import db  # noqa: E402
+import faq  # noqa: E402
 import handlers  # noqa: E402
 import keyboards  # noqa: E402
 import legal  # noqa: E402
@@ -1471,8 +1472,17 @@ async def check_menu_buttons() -> None:
     # кнопок подряд топили «Открыть приложение».
     check("меню короткое", len(top) <= 3, str(labels))
     check("приложение в меню", any(b.web_app for b in top), str(labels))
-    check("поддержка в меню",
-          any(b.url == "https://t.me/support" for b in top), str(labels))
+    # Поддержка ведёт в приложение, а не на чей-то профиль: там
+    # обращение превращается в тикет с номером и перепиской, и не
+    # теряется в личке среди уведомлений.
+    support = [b for b in top if b.text == "Поддержка"]
+    check("поддержка в меню", len(support) == 1, str(labels))
+    check("поддержка открывает приложение, а не ссылку",
+          bool(support and support[0].web_app and not support[0].url),
+          str(support))
+    check("на чей-то профиль меню не ведёт",
+          not any((b.url or "").startswith("https://t.me/") for b in top),
+          str([b.url for b in top]))
     check("кнопка документов в меню",
           any(b.callback_data == "m:docs" for b in top), str(labels))
     check("поддержка и документы в одном ряду",
@@ -2054,6 +2064,87 @@ async def check_tickets() -> None:
         check(f"бот умеет {method} для {kind}", hasattr(Bot, method))
 
 
+async def check_ban_and_faq() -> None:
+    print("\nБлокировка и частые вопросы")
+
+    # Частые вопросы описывают устройство сервиса, поэтому числа в них
+    # берутся из настроек. Иначе правишь лимит в config, а в ответе он
+    # остаётся прежним — и человек читает неправду.
+    items = faq.items()
+    check("вопросы есть", len(items) >= 5, str(len(items)))
+    check("у каждого есть ответ",
+          all(item["q"] and item["a"] for item in items))
+    config.DAILY_LIMIT = 137
+    check("числа подставляются из настроек",
+          any("137" in item["a"] for item in faq.items()),
+          str([item["a"][:40] for item in faq.items()])[:120])
+    config.DAILY_LIMIT = 200
+
+    # Блокировка.
+    victim = 555999
+    await db.ensure_user(victim, "spammer", "Спамер")
+    check("по умолчанию доступ открыт",
+          await db.is_banned(victim) == (False, ""))
+
+    account_id = await db.save_account(
+        victim, "+79990000700", crypto.encrypt("s"), tg_id=70,
+        name="Спамерский", username=None,
+    )
+    campaign_id = await db.create_campaign(
+        victim, account_id, title="Спам", text="привет", interval=0,
+        source="chats", folder_id=None, chat_ids=[-1001],
+        start_at=int(time.time()),
+    )
+    watch_id = await db.create_watch(
+        victim, account_id, -2001, "Канал", 0, 0, 0,
+    )
+
+    await db.set_banned(victim, True, "спам в обращениях")
+    banned, reason = await db.is_banned(victim)
+    check("бан ставится", banned and reason == "спам в обращениях", reason)
+
+    stopped = await db.stop_user_work(victim, "доступ закрыт")
+    check("рассылка и наблюдение встали", stopped == 2, str(stopped))
+    check("рассылка действительно остановлена",
+          (await db.campaign(victim, campaign_id)).status == "stopped")
+    check("наблюдение тоже",
+          (await db.watch(victim, watch_id)).status == "stopped")
+
+    # Бан — про поведение, а не про деньги: купленное остаётся.
+    await db.add_coins(victim, 50, "тест")
+    check("монеты у забаненного остаются",
+          await db.coins_of(victim) == 50, str(await db.coins_of(victim)))
+
+    check("забаненный есть в списке",
+          any(row["user_id"] == victim for row in await db.banned_users()))
+
+    await db.set_banned(victim, False, "")
+    check("разбан снимает и причину",
+          await db.is_banned(victim) == (False, ""))
+    check("из списка забаненных исчез",
+          not any(row["user_id"] == victim for row in await db.banned_users()))
+
+    # Владельца забанить нельзя — проверка стоит в ручке, а не в базе:
+    # база не должна знать про роли.
+    source = (Path(__file__).parent / "webapp.py").read_text(encoding="utf-8")
+    check("владельца забанить нельзя",
+          "Владельца забанить нельзя" in source)
+    check("бан закрыт от чужих",
+          "async def api_admin_ban" in source
+          and source.index("@admin_only\nasync def api_admin_ban")
+          < source.index("async def api_admin_ban") + 20)
+
+    # Обращений в сутки — два, и это настройка, а не число в коде.
+    check("лимит обращений — настройка",
+          config.TICKETS_PER_DAY == 2, str(config.TICKETS_PER_DAY))
+    check("лимит виден приложению",
+          "tickets_per_day" in source)
+
+    await db.delete_campaign(victim, campaign_id)
+    await db.delete_watch(victim, watch_id)
+    await db.delete_account(victim, account_id)
+
+
 async def check_paid_chats() -> None:
     print("\nПлатные чаты и загрузка медиа")
     account_id = await db.save_account(
@@ -2352,7 +2443,8 @@ def check_texts() -> None:
     )
     check(
         "кнопка поддержки на месте",
-        any(b.url == "https://t.me/support" for b in buttons),
+        any(b.text == "Поддержка" and b.web_app for b in buttons),
+        str([b.text for b in buttons]),
     )
     check("кнопка меню — WebApp", type(keyboards.menu_button()).__name__
           == "MenuButtonWebApp")
@@ -2375,6 +2467,7 @@ def check_wiring() -> None:
         "POST /api/invoice/crypto",
         "POST /api/invoice/xrocket",
         "POST /api/paid-limit",
+        "POST /api/admin/ban",
         "POST /api/tickets",
         "POST /api/ticket/read",
         "POST /api/ticket/send",
@@ -2420,6 +2513,7 @@ async def run() -> None:
         await check_variants()
         await check_attached_media()
         await check_tickets()
+        await check_ban_and_faq()
         await check_paid_chats()
         await check_watches()
         await check_joins()

@@ -196,13 +196,13 @@ async def help_command(message: Message) -> None:
 
 @router.message(Command("support"))
 async def support_command(message: Message) -> None:
+    """Поддержка — это тикеты в приложении, а не чей-то профиль.
+
+    Так у обращения есть номер, переписка и статус, и оно не теряется в
+    личке среди уведомлений о рассылках.
+    """
     await _remember(message)
-    if not config.SUPPORT_URL:
-        await message.answer(texts.SUPPORT_MISSING)
-        return
-    await message.answer(
-        f"💬 Поддержка: {config.SUPPORT_URL}", reply_markup=keyboards.main_menu()
-    )
+    await message.answer(texts.SUPPORT, reply_markup=keyboards.main_menu())
 
 
 @router.message(Command("terms"))

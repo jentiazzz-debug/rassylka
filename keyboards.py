@@ -211,11 +211,16 @@ def main_menu(custom: list[dict] | None = None) -> InlineKeyboardMarkup:
             )
 
     # Поддержка и документы — вторым рядом, рядом друг с другом.
+    # Поддержка ведёт в приложение, а не на чей-то профиль. Обращения
+    # там превращаются в тикеты: у каждого есть номер, переписка и
+    # статус, и ни одно не теряется в личке среди уведомлений. Ссылка на
+    # живого человека этого не даёт — и, кроме того, привязывает сервис
+    # к конкретному аккаунту, который однажды меняется.
     support_row = 0
-    if config.SUPPORT_URL and not custom:
+    if config.webapp_ready() and not custom:
         builder.button(
             text="Поддержка",
-            url=config.SUPPORT_URL,
+            web_app=WebAppInfo(url=config.WEBAPP_URL),
             icon_custom_emoji_id=SUPPORT_EMOJI,
             style="primary",
         )
@@ -252,6 +257,9 @@ def docs_menu() -> InlineKeyboardMarkup:
         builder.button(text="📄 Соглашение", url=f"{base}/terms")
         builder.button(text="🔒 Конфиденциальность", url=f"{base}/privacy")
         rows.append(2)
+        # Страница поддержки остаётся: банк требует адрес, который
+        # открывается без Telegram. Живого контакта на ней нет — есть
+        # почта и порядок обращения.
         builder.button(text="🛟 Поддержка и реквизиты", url=f"{base}/support")
         rows.append(1)
 

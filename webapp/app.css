@@ -387,6 +387,34 @@ button.row:disabled { opacity: .5; cursor: default; }
 .sub-note { font-size: 12.5px; color: var(--ink-2); margin-top: 2px; }
 .expired .sub-title { color: var(--warn); }
 
+/* Частые вопросы. Ответ раскрывается на месте: уводить за ним на
+   отдельный экран — значит потерять список, к которому человек
+   вернётся за следующим вопросом. */
+.faq-q {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 17px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.faq-q + .faq-a { border-top: 0; }
+.faq-q .ic { transition: transform .16s ease; }
+.faq-q.open .ic { transform: rotate(90deg); }
+.faq-a {
+  padding: 0 17px 15px;
+  color: var(--ink-2);
+  font-size: 13.5px;
+  white-space: pre-wrap;
+}
+.faq-item + .faq-item { border-top: 1px solid var(--hairline); }
+
 /* --- пачки монет --- */
 
 /* Раньше плитки были ячейками таблицы: сетка с промежутком в один
@@ -490,6 +518,10 @@ button.row:disabled { opacity: .5; cursor: default; }
 
 /* Итог — последняя строка перед кнопкой оплаты, и читать её должны
    первой из трёх. Отсюда и вес, и размер. */
+/* Строка, за которой стоит необратимое: цвет только в подписи, фона
+   нет. Красная плашка во всю ширину панели пугает сильнее, чем нужно. */
+.danger-row .row-title { color: var(--danger); }
+
 .pay-row {
   justify-content: space-between;
   padding-top: 14px;

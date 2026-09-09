@@ -35,6 +35,7 @@ import config
 import cryptobot
 import xrocket
 import db
+import faq
 import handlers
 import legal
 import payments
@@ -218,6 +219,12 @@ async def _state(user_id: int) -> dict:
         "watches": await _watch_cards(user_id),
         "paid_max_stars": await db.paid_max_stars(user_id),
         "tickets": [_ticket_card(row) for row in await db.tickets_of(user_id)],
+        "faq": faq.items(),
+        # Приложение не прячем: человек должен видеть, что доступ
+        # закрыт, и почему. Пустой экран без объяснения он примет за
+        # поломку и придёт спрашивать — уже другим способом.
+        "banned": (await db.is_banned(user_id))[0],
+        "ban_reason": (await db.is_banned(user_id))[1],
         "limits": {
             "max_accounts": config.MAX_ACCOUNTS,
             "trial_days": config.TRIAL_DAYS,
@@ -226,6 +233,7 @@ async def _state(user_id: int) -> dict:
             "max_text": config.MAX_TEXT,
             "max_watches": config.MAX_WATCHES,
             "max_upload_mb": config.MAX_UPLOAD_MB,
+            "tickets_per_day": config.TICKETS_PER_DAY,
             "paid_cap": config.PAID_MAX_STARS,
             "comment_min_delay": config.COMMENT_MIN_DELAY,
             "max_variants": config.MAX_VARIANTS,
@@ -783,6 +791,15 @@ async def api_ticket_send(request: web.Request) -> web.Response:
     if _bot is None:
         return _fail("Поддержка сейчас недоступна. Напишите позже.")
 
+    banned, reason = await db.is_banned(user_id)
+    if banned:
+        # Причину показываем: молчаливый отказ выглядит поломкой, и
+        # человек начнёт долбиться в него снова и снова.
+        return _fail(
+            "Доступ к поддержке закрыт"
+            + (f": {reason}." if reason else ".")
+        )
+
     limit = config.MAX_UPLOAD_MB * 1024 * 1024
     subject = body = ""
     ticket_id = 0
@@ -854,10 +871,10 @@ async def api_ticket_send(request: web.Request) -> web.Response:
         else:
             if not subject:
                 return _fail("Напишите тему обращения.")
-            if await db.count_tickets_today(user_id) >= tickets.DAILY_LIMIT:
+            if await db.count_tickets_today(user_id) >= config.TICKETS_PER_DAY:
                 return _fail(
-                    f"Больше {tickets.DAILY_LIMIT} обращений в сутки завести "
-                    "нельзя. Допишите в уже открытое."
+                    f"Больше {config.TICKETS_PER_DAY} обращений в сутки "
+                    "завести нельзя. Допишите в уже открытое."
                 )
             ticket_id = await tickets.open_ticket(
                 _bot, person, subject, body, file_kind, file_id,
@@ -1105,6 +1122,9 @@ async def api_watch_create(
 ) -> web.Response:
     user_id = int(user["id"])
 
+    if (await db.is_banned(user_id))[0]:
+        return _fail("Доступ закрыт.")
+
     subscription = await db.subscription(user_id)
     if not subscription.active:
         return _fail(
@@ -1199,6 +1219,9 @@ async def api_campaign_create(
     request: web.Request, user: dict, data: dict
 ) -> web.Response:
     user_id = int(user["id"])
+
+    if (await db.is_banned(user_id))[0]:
+        return _fail("Доступ закрыт.")
 
     subscription = await db.subscription(user_id)
     if not subscription.active:
@@ -1647,6 +1670,41 @@ async def api_admin_campaign(
 
 @authed
 @admin_only
+async def api_admin_ban(
+    request: web.Request, user: dict, data: dict
+) -> web.Response:
+    """Заблокировать человека или снять блокировку.
+
+    Бан — это про поведение, а не про деньги: рассылки забаненного
+    останавливаются, но всё, что он купил, остаётся при нём. Возврат
+    монет — отдельное решение владельца, и делать его молча нельзя.
+    """
+    target = _int(data.get("user_id"))
+    if target in config.ADMIN_IDS:
+        return _fail("Владельца забанить нельзя.")
+    if not await db.get_user_exists(target):
+        return _fail("Такого человека нет.")
+
+    banned = bool(data.get("banned"))
+    reason = str(data.get("reason") or "").strip()[:200]
+    await db.set_banned(target, banned, reason)
+
+    if banned:
+        stopped = await db.stop_user_work(target, "доступ закрыт")
+        log.info("забанен %s: %s (остановлено %s)", target, reason, stopped)
+        if _bot is not None:
+            try:
+                await _bot.send_message(target, texts.banned(reason))
+            except Exception:
+                pass
+    else:
+        log.info("разбанен %s", target)
+
+    return web.json_response({"ok": True, "card": await db.user_card(target)})
+
+
+@authed
+@admin_only
 async def api_admin_stats(request: web.Request, user: dict, data: dict) -> web.Response:
     return web.json_response({"ok": True, "stats": await db.stats()})
 
@@ -1681,6 +1739,7 @@ def build() -> web.Application:
             web.post("/api/admin/grant", api_admin_grant),
             web.post("/api/admin/campaign", api_admin_campaign),
             web.post("/api/admin/stats", api_admin_stats),
+            web.post("/api/admin/ban", api_admin_ban),
             web.get("/{name:app\\.(?:js|css)}", asset),
             web.post("/api/state", api_state),
             web.post("/api/login/start", api_login_start),

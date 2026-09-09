@@ -87,6 +87,12 @@ class Answer(StatesGroup):
     body = State()
 
 
+class Ban(StatesGroup):
+    """Блокировка: следующим сообщением идёт причина."""
+
+    reason = State()
+
+
 class Cast(StatesGroup):
     """Рассылка владельца: сообщение, потом кнопки, потом подтверждение."""
 
@@ -417,18 +423,29 @@ async def ticket_list(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-def _ticket_keys(ticket_id: int, status: str) -> InlineKeyboardBuilder:
+def _ticket_keys(ticket_id: int, status: str,
+                 banned: bool = False) -> InlineKeyboardBuilder:
     builder = InlineKeyboardBuilder()
     builder.button(text="💬 Ответить", callback_data=f"a:t:reply:{ticket_id}")
     if status != "closed":
         builder.button(text="✅ Закрыть", callback_data=f"a:t:close:{ticket_id}")
+    # Блокировка стоит здесь, а не только в приложении: спам виден
+    # именно в тикете, и ходить за кнопкой в другое место, дочитав
+    # третье подряд «ааа», никто не станет.
+    builder.button(
+        text="✅ Открыть доступ" if banned else "🚫 Забанить",
+        callback_data=f"a:t:{'unban' if banned else 'ban'}:{ticket_id}",
+    )
     builder.button(text="← К списку", callback_data="a:tickets")
-    builder.adjust(2, 1)
+    builder.adjust(2, 1, 1)
     return builder
 
 
-@router.callback_query(F.data.startswith("a:t:") & ~F.data.contains("reply")
-                       & ~F.data.contains("close"))
+#: Открытие тикета — это «a:t:<номер>», а всё остальное под «a:t:» уже
+#: действия. Проверяем по форме, а не перечислением исключений: каждое
+#: новое действие иначе нужно не забыть дописать в фильтр, а забыть его
+#: значит уронить открытие на int("ban").
+@router.callback_query(F.data.regexp(r"^a:t:\d+$"))
 async def ticket_open(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     ticket_id = int(callback.data.split(":")[2])
@@ -452,9 +469,12 @@ async def ticket_open(callback: CallbackQuery, state: FSMContext) -> None:
         who = "👤" if message["author"] == "user" else "💬"
         await tickets.deliver(callback.bot, callback.message.chat.id, message, who)
 
+    banned, _ = await db.is_banned(int(found["user_id"]))
     await callback.message.answer(
         "Что делать с обращением?",
-        reply_markup=_ticket_keys(ticket_id, found["status"]).as_markup(),
+        reply_markup=_ticket_keys(
+            ticket_id, found["status"], banned
+        ).as_markup(),
     )
 
 
@@ -492,6 +512,77 @@ async def ticket_reply_send(message: Message, state: FSMContext) -> None:
     await message.answer(
         f"✅ Ответ на #{ticket_id} отправлен.",
         reply_markup=_ticket_keys(ticket_id, "answered").as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("a:t:ban:"))
+async def ticket_ban(callback: CallbackQuery, state: FSMContext) -> None:
+    """Закрыть доступ автору обращения.
+
+    Причину спрашиваем следующим сообщением: без неё человек получит
+    отказ без объяснения и придёт снова — уже другим способом.
+    """
+    ticket_id = int(callback.data.split(":")[3])
+    await state.set_state(Ban.reason)
+    await state.update_data(ticket_id=ticket_id)
+    await callback.message.answer(
+        f"🚫 <b>Закрыть доступ автору тикета #{ticket_id}</b>\n\n"
+        "Напишите причину одним сообщением — её увидит он сам. "
+        "Рассылки и автокомментарии остановятся, купленное останется на "
+        "счету.\n\n"
+        "Чтобы передумать — «Отмена».",
+        reply_markup=_cancel().as_markup(),
+    )
+    await callback.answer()
+
+
+@router.message(Ban.reason, F.text)
+async def ticket_ban_do(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    ticket_id = int(data.get("ticket_id") or 0)
+    await state.clear()
+
+    found = await db.ticket(ticket_id)
+    if found is None:
+        await message.answer("Тикет не найден.")
+        return
+
+    target = int(found["user_id"])
+    if target in config.ADMIN_IDS:
+        await message.answer("Владельца забанить нельзя.")
+        return
+
+    reason = (message.text or "").strip()[:200]
+    await db.set_banned(target, True, reason)
+    stopped = await db.stop_user_work(target, "доступ закрыт")
+    await db.set_ticket_status(ticket_id, "closed")
+    log.info("забанен %s из тикета #%s: %s", target, ticket_id, reason)
+
+    try:
+        await message.bot.send_message(target, texts.banned(reason))
+    except Exception:
+        pass
+
+    await message.answer(
+        f"🚫 Доступ закрыт. Остановлено рассылок и наблюдений: {stopped}. "
+        f"Тикет #{ticket_id} закрыт.",
+        reply_markup=_ticket_keys(ticket_id, "closed", True).as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("a:t:unban:"))
+async def ticket_unban(callback: CallbackQuery) -> None:
+    ticket_id = int(callback.data.split(":")[3])
+    found = await db.ticket(ticket_id)
+    if found is None:
+        await callback.answer("Тикет не найден", show_alert=True)
+        return
+    await db.set_banned(int(found["user_id"]), False, "")
+    await callback.answer("Доступ открыт")
+    await callback.message.answer(
+        "✅ Доступ открыт. Рассылки остались остановленными — их человек "
+        "запускает сам.",
+        reply_markup=_ticket_keys(ticket_id, found["status"], False).as_markup(),
     )
 
 

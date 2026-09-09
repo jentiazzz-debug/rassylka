@@ -426,6 +426,16 @@ async def _migrate() -> None:
         "ALTER TABLE chats ADD COLUMN paid_stars INTEGER NOT NULL DEFAULT 0",
     )
     await _ensure_column(
+        # Заблокирован ли человек и за что. Отдельной таблицы «баны» нет
+        # намеренно: бан — это свойство человека, а не событие, и жить
+        # ему ровно столько же, сколько его записи.
+        "users", "banned",
+        "ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0",
+    )
+    await _ensure_column(
+        "users", "ban_reason", "ALTER TABLE users ADD COLUMN ban_reason TEXT",
+    )
+    await _ensure_column(
         # Потолок, выше которого человек платить не готов. 0 — не писать
         # в платные чаты вовсе, и это значение по умолчанию: списываются
         # звёзды с самого подключённого аккаунта, и тратить их молча
@@ -610,6 +620,57 @@ async def spend_coins(user_id: int, coins: int, reason: str) -> bool:
     )
     await _conn().commit()
     return True
+
+
+async def is_banned(user_id: int) -> tuple[bool, str]:
+    """Заблокирован ли человек и за что.
+
+    Возвращает пару, а не флаг: причину надо показать ему самому —
+    молчаливый отказ выглядит поломкой, а не решением.
+    """
+    row = await _fetchone(
+        "SELECT banned, ban_reason FROM users WHERE user_id = ?", (user_id,)
+    )
+    if row is None:
+        return False, ""
+    return bool(row["banned"]), str(row["ban_reason"] or "")
+
+
+async def set_banned(user_id: int, banned: bool, reason: str = "") -> None:
+    await _conn().execute(
+        "UPDATE users SET banned = ?, ban_reason = ? WHERE user_id = ?",
+        (1 if banned else 0, reason or None, user_id),
+    )
+    await _conn().commit()
+
+
+async def stop_user_work(user_id: int, note: str) -> int:
+    """Остановить всё, что человек запустил. Возвращает, сколько встало.
+
+    Бан без этого был бы половинчатым: доступ закрыт, а рассылки идут —
+    именно они и были поводом.
+    """
+    campaigns = await _conn().execute(
+        "UPDATE campaigns SET status = 'stopped', note = ? "
+        "WHERE user_id = ? AND status != 'stopped'",
+        (note, user_id),
+    )
+    watches = await _conn().execute(
+        "UPDATE watches SET status = 'stopped', note = ? "
+        "WHERE user_id = ? AND status != 'stopped'",
+        (note, user_id),
+    )
+    await _conn().commit()
+    return int(campaigns.rowcount or 0) + int(watches.rowcount or 0)
+
+
+async def banned_users(limit: int = 50) -> list[dict]:
+    rows = await _fetchall(
+        "SELECT user_id, username, name, ban_reason FROM users "
+        "WHERE banned = 1 ORDER BY seen_at DESC LIMIT ?",
+        (limit,),
+    )
+    return [dict(row) for row in rows]
 
 
 async def paid_max_stars(user_id: int) -> int:

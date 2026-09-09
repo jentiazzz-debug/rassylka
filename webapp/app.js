@@ -934,6 +934,7 @@ function renderMain() {
   renderCampaigns();
   renderWatches();
   renderPaidLimit();
+  renderFaq();
   renderTickets();
   renderProfile();
   setPane(pane);
@@ -1408,6 +1409,32 @@ const TICKET_STATUS = {
   closed: 'закрыт',
 };
 
+function renderFaq() {
+  const box = $('faq');
+  box.textContent = '';
+  for (const item of state.faq || []) {
+    const wrap = document.createElement('div');
+    wrap.className = 'faq-item';
+
+    const question = document.createElement('button');
+    question.className = 'faq-q';
+    question.appendChild(icon('chevron', 'ic-s'));
+    question.append(item.q);
+
+    const answer = document.createElement('div');
+    answer.className = 'faq-a';
+    answer.textContent = item.a;
+    answer.hidden = true;
+
+    question.onclick = () => {
+      answer.hidden = !answer.hidden;
+      question.classList.toggle('open', !answer.hidden);
+    };
+    wrap.append(question, answer);
+    box.appendChild(wrap);
+  }
+}
+
 function renderTickets() {
   const box = $('tickets');
   const list = state.tickets || [];
@@ -1442,6 +1469,10 @@ function renderTickets() {
 }
 
 async function openTicket(item) {
+  if (state.banned && !item) {
+    return alertBox('Доступ к поддержке закрыт'
+      + (state.ban_reason ? ': ' + state.ban_reason : '.'));
+  }
   ticket = { id: item ? item.id : 0, file: null, status: item ? item.status : '' };
   $('ticket-head').textContent = item
     ? '#' + item.id + ' · ' + item.subject : 'Новое обращение';
@@ -2382,6 +2413,47 @@ async function renderAdmin() {
   ]);
 }
 
+/** Закрыть или открыть доступ.
+
+    Причину спрашиваем и показываем человеку: молчаливый отказ выглядит
+    поломкой, и он придёт спрашивать ещё раз — уже другим способом. */
+function adminBanRow(userId, user) {
+  const row = document.createElement('button');
+  row.className = 'row';
+  const body = document.createElement('div');
+  body.className = 'row-body';
+  const title = document.createElement('div');
+  title.className = 'row-title';
+  title.textContent = user.banned ? 'Открыть доступ' : 'Закрыть доступ';
+  const note = document.createElement('div');
+  note.className = 'row-note';
+  note.textContent = user.banned
+    ? 'снять блокировку'
+    : 'спам и мусор в обращениях — рассылки тоже встанут';
+  body.append(title, note);
+  row.appendChild(body);
+  if (!user.banned) row.classList.add('danger-row');
+
+  row.onclick = async () => {
+    if (user.banned) {
+      const result = await api('/api/admin/ban', {
+        user_id: userId, banned: false,
+      });
+      if (!result.ok) return alertBox(result.error);
+      return adminOpen(userId);
+    }
+    const reason = window.prompt('За что закрываем доступ?', 'спам');
+    if (reason === null) return;
+    const result = await api('/api/admin/ban', {
+      user_id: userId, banned: true, reason: reason.trim(),
+    });
+    if (!result.ok) return alertBox(result.error);
+    haptic('success');
+    adminOpen(userId);
+  };
+  return row;
+}
+
 async function adminFind() {
   const button = $('admin-find');
   const query = $('admin-query').value.trim();
@@ -2450,6 +2522,9 @@ async function adminOpen(userId) {
       : 'кончилась'],
     ['Аккаунтов', card.accounts.length],
     ['Рассылок', card.campaigns.length],
+    ['Доступ', card.user.banned
+      ? 'закрыт' + (card.user.ban_reason ? ': ' + card.user.ban_reason : '')
+      : 'открыт'],
   ]);
   box.appendChild(summary);
 
@@ -2461,6 +2536,7 @@ async function adminOpen(userId) {
     'Сколько монет начислить? Отрицательное число спишет.'));
   actions.appendChild(adminGrantRow(userId, 'Продлить подписку', 'days',
     'На сколько дней продлить? Отрицательное число сократит.'));
+  actions.appendChild(adminBanRow(userId, card.user));
   box.appendChild(actions);
 
   if (card.accounts.length) {
