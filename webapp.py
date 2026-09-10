@@ -238,7 +238,6 @@ async def _state(user_id: int) -> dict:
             "comment_min_delay": config.COMMENT_MIN_DELAY,
             "max_variants": config.MAX_VARIANTS,
         },
-        "support_url": config.SUPPORT_URL,
         "banner": {
             "title": await db.setting("app_banner_title"),
             "text": await db.setting("app_banner_text"),

@@ -93,6 +93,11 @@ async def run() -> None:
     # какая из них стоит на этом сервере.
     import telethon
 
+    # Ник бота нужен страницам документов: узнать его проще у Telegram,
+    # чем требовать от владельца вписать руками то, что и так известно.
+    if not config.BOT_USERNAME:
+        config.BOT_USERNAME = me.username or ""
+
     log.info(
         "запущен как @%s, aiogram %s, telethon %s, python %s",
         me.username, aiogram_version, telethon.__version__,

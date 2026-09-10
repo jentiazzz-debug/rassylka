@@ -506,10 +506,6 @@ function renderProfile() {
 
   renderReferral();
 
-  const support = $('me-support');
-  support.hidden = !state.support_url;
-  if (state.support_url) support.href = state.support_url;
-
   renderBanner();
   renderPlans();
   renderLegal();

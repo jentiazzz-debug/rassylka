@@ -140,9 +140,11 @@ def cast_markup(items: list[dict] | None) -> InlineKeyboardMarkup | None:
                 continue
             builder.button(text=text, web_app=WebAppInfo(url=config.WEBAPP_URL), **extra)
         elif action == "support":
-            if not config.SUPPORT_URL:
+            if not config.webapp_ready():
                 continue
-            builder.button(text=text, url=config.SUPPORT_URL, **extra)
+            builder.button(
+                text=text, web_app=WebAppInfo(url=config.WEBAPP_URL), **extra
+            )
         elif action in ACTIONS:
             builder.button(text=text, callback_data=ACTIONS[action], **extra)
         else:
@@ -188,8 +190,13 @@ def main_menu(custom: list[dict] | None = None) -> InlineKeyboardMarkup:
                 custom_rows += 1
             continue
         if action == "support":
-            if config.SUPPORT_URL:
-                builder.button(text=text, url=config.SUPPORT_URL, **extra)
+            # Ведёт в приложение, а не на чей-то профиль: поддержка — это
+            # раздел с обращениями. Слово в настройке осталось прежним,
+            # чтобы у владельца не сломались уже заданные кнопки.
+            if config.webapp_ready():
+                builder.button(
+                    text=text, web_app=WebAppInfo(url=config.WEBAPP_URL), **extra
+                )
                 custom_rows += 1
             continue
         if action in ACTIONS:

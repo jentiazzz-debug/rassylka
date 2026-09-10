@@ -59,21 +59,28 @@ def _review_mark() -> str:
 
 
 def _contacts_html() -> str:
-    rows = []
-    if config.LEGAL_EMAIL:
-        rows.append(
-            f'<li>Электронная почта: <a href="mailto:{escape(config.LEGAL_EMAIL)}">'
-            f"{escape(config.LEGAL_EMAIL)}</a></li>"
-        )
-    if config.SUPPORT_URL:
-        rows.append(
-            f'<li>Поддержка в Telegram: <a href="{escape(config.SUPPORT_URL)}">'
-            f"{escape(config.SUPPORT_URL)}</a></li>"
-        )
-    if not rows:
-        rows.append(
-            '<li><span class="todo">контакты поддержки не указаны — '
-            "заполните LEGAL_EMAIL или SUPPORT_USERNAME</span></li>"
+    """Как связаться. Единственный способ — обращение в приложении.
+
+    Личных контактов здесь нет намеренно: у обращения из приложения есть
+    номер, переписка и статус, и оно не теряется. Написанное же в личку
+    живому человеку не отслеживается никак — ни им самим, ни тем более
+    тем, кто написал.
+
+    Почта остаётся в настройках (`LEGAL_EMAIL`) и на страницу не
+    выводится. Если её однажды потребует касса или банк, вернуть строку
+    сюда — минутное дело; убирать переменную ради этого не стоит.
+    """
+    rows = [
+        "<li>Обращение в поддержку — в приложении бота, раздел "
+        "«Поддержка». У каждого обращения есть номер и переписка, "
+        "ответ приходит в чат с ботом.</li>",
+        "<li>К обращению можно приложить скриншот или запись экрана.</li>",
+    ]
+    if config.BOT_USERNAME:
+        rows.insert(
+            0,
+            f'<li>Бот сервиса: <a href="https://t.me/{escape(config.BOT_USERNAME)}">'
+            f"@{escape(config.BOT_USERNAME)}</a></li>",
         )
     return "\n".join(rows)
 
