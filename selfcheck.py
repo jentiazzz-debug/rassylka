@@ -19,6 +19,7 @@ Telegram здесь не участвует — ни бот, ни MTProto. Пр�
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import hmac
 import json
@@ -2456,9 +2457,436 @@ def check_texts() -> None:
           == "MenuButtonWebApp")
 
 
+async def check_radar_filter() -> None:
+    """Предфильтр: он решает, за что мы платим и что теряем.
+
+    Обе ошибки здесь стоят денег, но по-разному. Лишний пропуск — это
+    доли копейки за разбор. Пропущенный заказ — это заказ. Поэтому
+    настоящие заказы в списке ниже важнее мусора: если сломается
+    отсечение рекламы, вырастет счёт, а если сломается пропуск заказов,
+    радар молча перестанет работать, и заметить это будет не по чему.
+    """
+    import classify
+
+    print("\nРадар: предфильтр")
+    passes = (
+        "Ищу разработчика телеграм-бота для записи клиентов в барбершоп, "
+        "бюджет 30к",
+        "Нужен бот для рассылки по базе, есть ТЗ. Пишите в лс с ценой",
+        "Кто может допилить бота на aiogram? Отвалилась оплата, срочно",
+        "Требуется специалист для интеграции CRM с ботом, оплата по факту",
+        "Надо сделать мини-апп для магазина, каталог и корзина. Кто возьмётся",
+        "Нужен бот для рассылки, бюджет 20к",
+    )
+    for text in passes:
+        check(f"заказ проходит: {text[:38]}…", classify.prefilter(text), text)
+
+    mirror = (
+        "Ищу работу, делаю ботов на python, опыт 3 года, портфолио в лс",
+        "Возьму заказ на разработку телеграм-бота, цена договорная",
+        "Готов взяться за проект любой сложности, мои работы в закрепе",
+        "Делаю ботов под ключ, пишите, обсудим бюджет",
+        "Оказываю услуги по разработке ботов, бюджет обсуждается",
+        "В поиске работы, рассмотрю предложения по разработке ботов",
+    )
+    for text in mirror:
+        check(
+            f"реклама исполнителя отсекается: {text[:30]}…",
+            not classify.prefilter(text),
+            text,
+        )
+
+    noise = (
+        "+",
+        "да ладно, серьёзно что ли",
+        "https://t.me/somechannel",
+        "А какой фреймворк лучше для ботов, aiogram или telebot? Кто что "
+        "думает, хочу начать изучать",
+    )
+    for text in noise:
+        check(f"шум отсекается: {text[:30]}", not classify.prefilter(text), text)
+
+    check(
+        "ключевые слова отсекают чужой домен",
+        not classify.prefilter("Ищу дизайнера для логотипа, бюджет 15к",
+                               "бот, aiogram"),
+    )
+    check(
+        "ключевые слова пропускают свой домен",
+        classify.prefilter("Нужен телеграм бот для доставки, бюджет 40000",
+                           "бот, aiogram"),
+    )
+    check(
+        "без ключевых слов решает модель, а не сито",
+        classify.prefilter("Ищу дизайнера для логотипа, бюджет 15к", ""),
+    )
+
+    # Отпечаток: на нём держится склейка повторов, а повторы — главная
+    # причина, по которой лента лидов становится нечитаемой.
+    one = "Ищу разработчика бота для записи в барбершоп. Бюджет 30к!"
+    two = "ищу разработчика бота для записи в барбершоп   бюджет 30к"
+    three = "Ищу разработчика бота для доставки еды. Бюджет 30к"
+    check(
+        "тот же заказ с другой пунктуацией склеивается",
+        classify.fingerprint(1, one) == classify.fingerprint(1, two),
+    )
+    check(
+        "другой заказ того же автора не склеивается",
+        classify.fingerprint(1, one) != classify.fingerprint(1, three),
+    )
+    check(
+        "тот же текст от другого автора не склеивается",
+        classify.fingerprint(1, one) != classify.fingerprint(2, one),
+    )
+
+
+async def check_radar_verdicts() -> None:
+    """Разбор ответа модели.
+
+    Главное здесь — раскладка по номерам. Модель отвечает номерами, а не
+    порядком, и один пропущенный номер при наивной раскладке сдвинул бы
+    все вердикты на единицу: заказ уехал бы на чужое сообщение, с чужим
+    автором и чужим чатом в карточке. Заметить такое по внешнему виду
+    ленты почти невозможно.
+    """
+    import classify
+
+    print("\nРадар: разбор ответа модели")
+
+    class Block:
+        type = "text"
+
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class Reply:
+        stop_reason = "end_turn"
+
+        def __init__(self, text: str) -> None:
+            self.content = [Block(text)]
+
+    out = classify._unpack(
+        Reply('{"verdicts":['
+              '{"n":2,"order":true,"score":77,"budget":15000,"currency":"RUB",'
+              '"urgency":"normal","stack":["python"],"summary":"Парсер"},'
+              '{"n":1,"order":false,"score":5,"budget":0,"currency":"",'
+              '"urgency":"low","stack":[],"summary":""}]}'),
+        2,
+    )
+    check("вердиктов столько же, сколько сообщений", len(out) == 2)
+    check(
+        "вердикты кладутся по номерам, а не по порядку ответа",
+        out[0].order is False and out[1].order is True,
+    )
+    check("поля вердикта читаются", out[1].score == 77 and out[1].budget == 15000)
+
+    out = classify._unpack(
+        Reply('{"verdicts":[{"n":1,"order":true,"score":90,"budget":0,'
+              '"currency":"","urgency":"low","stack":[],"summary":"a"}]}'),
+        3,
+    )
+    check(
+        "пропущенный номер не сдвигает соседей",
+        len(out) == 3 and not out[1].order and not out[2].order,
+    )
+
+    out = classify._unpack(
+        Reply('{"verdicts":[{"n":9,"order":true,"score":90,"budget":0,'
+              '"currency":"","urgency":"low","stack":[],"summary":"a"}]}'),
+        2,
+    )
+    check("номер за пределами пачки отбрасывается", not any(v.order for v in out))
+
+    check(
+        "мусор вместо JSON не роняет разбор",
+        not any(v.order for v in classify._unpack(Reply("не json"), 2)),
+    )
+
+    class Refused(Reply):
+        stop_reason = "refusal"
+
+    check(
+        "отказ модели не роняет разбор",
+        not any(v.order for v in classify._unpack(Refused("{}"), 2)),
+    )
+
+    one = classify._unpack(
+        Reply('{"verdicts":[{"n":1,"order":true,"score":900,"budget":-5,'
+              '"currency":"РУБЛЕЙРУБЛЕЙРУБЛЕЙ","urgency":"low",'
+              '"stack":["a","b","c","d","e","f","g"],'
+              '"summary":"' + "x" * 400 + '"}]}'),
+        1,
+    )[0]
+    check("оценка вне диапазона подрезается", one.score == 100)
+    check("отрицательный бюджет обнуляется", one.budget == 0)
+    check("длины полей подрезаются", len(one.stack) == 5 and len(one.summary) == 200)
+
+    check(
+        "без ключа классификатор честно выключен",
+        not classify.ready() if not config.ANTHROPIC_API_KEY else True,
+    )
+
+
+async def check_radar_storage() -> None:
+    """Хранилище радара: курсоры и склейка повторов."""
+    import classify
+
+    print("\nРадар: хранилище")
+    account_id = await db.save_account(
+        USER, "+79990000777", crypto.encrypt("session"),
+        tg_id=777001, name="Радарный", username=None,
+    )
+    radar = await db.create_radar(
+        USER, account_id, "Боты", "делаю телеграм-ботов на python и aiogram"
+    )
+    check("радар создан включённым", radar.status == "running")
+    check("радар виден воркеру", any(
+        r.id == radar.id for r in await db.radars_running()
+    ))
+
+    await db.mark_account(account_id, "dead")
+    check(
+        "радар на мёртвом аккаунте воркеру не выдаётся",
+        not any(r.id == radar.id for r in await db.radars_running()),
+    )
+    await db.mark_account(account_id, "ok")
+
+    added = await db.add_radar_chats(radar.id, [
+        {"chat_id": -1001, "title": "Заказы IT"},
+        {"chat_id": -1002, "title": "Фриланс боты"},
+    ])
+    check("чаты добавлены", added == 2, str(added))
+    check(
+        "повторное добавление чата ничего не создаёт",
+        await db.add_radar_chats(radar.id, [{"chat_id": -1001, "title": "x"}]) == 0,
+    )
+
+    await db.set_radar_cursor(radar.id, -1001, 500)
+    await db.set_radar_cursor(radar.id, -1001, 400)
+    rows = {c.chat_id: c for c in await db.radar_chats(radar.id)}
+    check("курсор назад не откатывается", rows[-1001].last_msg_id == 500,
+          str(rows[-1001].last_msg_id))
+
+    text = "Ищу разработчика бота для записи в барбершоп, бюджет 30к"
+    fields = {
+        "chat_id": -1001, "chat_title": "Заказы IT", "msg_id": 501,
+        "author_id": 777, "author_name": "Иван", "author_user": "ivan",
+        "text": text, "score": 82, "budget": 30000, "currency": "RUB",
+        "urgency": "high", "stack": ["python", "aiogram"],
+        "summary": "Бот записи", "verdict": "order",
+    }
+    mark = classify.fingerprint(777, text)
+    lead, fresh = await db.save_lead(radar.id, USER, mark, fields)
+    check("первый заказ записан как новый", fresh)
+    check("стек читается обратно списком", lead.stack == ["python", "aiogram"])
+
+    repeat, again = await db.save_lead(
+        radar.id, USER, mark,
+        dict(fields, chat_id=-1002, chat_title="Фриланс боты", msg_id=88),
+    )
+    check("повтор в другом чате не создаёт второй лид", not again)
+    check("у повтора вырос счётчик", repeat.repeats == 1, str(repeat.repeats))
+    check("карточка осталась от первого чата", repeat.chat_title == "Заказы IT")
+
+    other = classify.fingerprint(777, "Нужен бот для доставки еды, бюджет 50к")
+    _, third = await db.save_lead(radar.id, USER, other, dict(fields, msg_id=99))
+    check("другой заказ того же автора — отдельный лид", third)
+
+    await db.save_lead(radar.id, USER, "fp-skip",
+                       dict(fields, msg_id=100, verdict="skip", score=12))
+    check("заказы и отсеянное лежат отдельно",
+          len(await db.leads(USER, verdict="order")) == 2
+          and len(await db.leads(USER, verdict="skip")) == 1)
+
+    await db.bump_radar_usage(USER, 1, 8)
+    await db.bump_radar_usage(USER, 2, 5)
+    check("расход классификатора накапливается за сутки",
+          await db.radar_usage_today(USER) == (3, 13),
+          str(await db.radar_usage_today(USER)))
+
+    await db.delete_radar(USER, radar.id)
+    check("радар удалён", await db.radar(USER, radar.id) is None)
+    check("чаты ушли вместе с радаром", not await db.radar_chats(radar.id))
+    check("найденные заказы пережили удаление радара",
+          len(await db.leads(USER, verdict="order")) == 2)
+
+
+def check_radar_card() -> None:
+    """Карточка находки. Она уходит в личку человеку, и любая чужая
+    угловая скобка в имени автора сломала бы разметку сообщения."""
+    import texts
+
+    print("\nРадар: карточка находки")
+    lead = db.Lead(
+        id=1, radar_id=1, user_id=USER, chat_id=-1001,
+        chat_title="Заказы IT & боты", msg_id=501, author_id=777,
+        author_name="Иван <Петров>", author_user="ivan",
+        text="Ищем разработчика бота для записи клиентов. Бюджет 30к.",
+        score=82, budget=30000, currency="RUB", urgency="high",
+        stack=["python", "aiogram"], summary="Бот записи в барбершоп",
+        verdict="order", judged=True, repeats=2, notified=False, created_at=0,
+    )
+    card = texts.lead_card(lead, "https://t.me/c/1001/501")
+    check("имя автора экранируется", "&lt;Петров&gt;" in card)
+    check("название чата экранируется", "&amp;" in card)
+    check("бюджет с разделителем разрядов", "30 000 ₽" in card)
+    check("повторы считаются вместе с исходным", "повтор в 3 чатах" in card)
+    check("ссылка на сообщение на месте", "Открыть сообщение" in card)
+
+    thin = dataclasses.replace(lead, budget=0, currency=None,
+                               urgency="normal", stack=[], repeats=0)
+    plain = texts.lead_card(thin, None)
+    check("пустой бюджет подписан словами", "бюджет не назван" in plain)
+    check("обычная срочность не пишется", "🔥" not in plain)
+    check("без ссылки строки нет", "Открыть" not in plain)
+
+
+async def check_radar_offline() -> None:
+    """Работа радара без ключа классификатора.
+
+    Это не запасной режим «на всякий случай», а обычное состояние для
+    всех, у кого ключа нет и не будет. Ломается он молча и обиднее
+    всего: сообщения собираются, счётчики растут, а лента пустая —
+    снаружи не отличить от «в чатах просто нет заказов».
+    """
+    import classify
+
+    print("\nРадар без модели")
+
+    check(
+        "без ключа классификатор выключен",
+        not classify.ready() if not config.ANTHROPIC_API_KEY else True,
+    )
+
+    money = (
+        ("бюджет 30к", 30000, "RUB"),
+        ("нужен бот, 15 000 руб", 15000, "RUB"),
+        ("оплата $500", 500, "USD"),
+        ("€1200 за проект", 1200, "EUR"),
+        ("от 20 до 50 тысяч", 20000, "RUB"),
+        ("бюджет 15-20к", 15000, "RUB"),
+        ("срок 14 дней, бюджет 45000", 45000, "RUB"),
+        ("нужен парсер, 50 тыс рублей", 50000, "RUB"),
+    )
+    for text, amount, money_name in money:
+        got = classify.budget_of(text)
+        check(f"бюджет из «{text}»", got == (amount, money_name), str(got))
+
+    blind = (
+        "бот для 1000 пользователей",
+        "ищу бота, деталей пока нет",
+        "нужен бот, обсудим позже",
+    )
+    for text in blind:
+        check(
+            f"без цифр бюджет не выдумывается: «{text[:30]}»",
+            classify.budget_of(text) == (0, ""),
+            str(classify.budget_of(text)),
+        )
+
+    # Главное. Раньше здесь возвращались отказы на всё подряд, и каждая
+    # находка молча уезжала в отсеянное.
+    items = [
+        classify.Candidate(
+            -100, "Заказы IT", 1, 7, "Иван", "ivan",
+            "Ищу разработчика телеграм-бота для записи в барбершоп. "
+            "Бюджет 30к, нужно срочно",
+        ),
+        classify.Candidate(
+            -100, "Заказы IT", 2, 8, "Пётр", None,
+            "Нужен парсер сайта в гугл-таблицу, деталей пока не много",
+        ),
+    ]
+    verdicts = await classify.classify("делаю телеграм-ботов", items)
+    check("вердиктов столько же, сколько сообщений", len(verdicts) == 2)
+    check(
+        "прошедшее сито считается заказом, а не отказом",
+        all(v.order for v in verdicts),
+    )
+    check(
+        "вердикт помечен как неразобранный",
+        all(not v.judged for v in verdicts),
+    )
+    check("бюджет вытащен регуляркой", verdicts[0].budget == 30000,
+          str(verdicts[0].budget))
+    check("срочность замечена", verdicts[0].urgency == "high")
+    check("суть взята из первой фразы",
+          verdicts[0].summary.startswith("Ищу разработчика"),
+          verdicts[0].summary)
+
+    # Оценка обязана дотягивать до планки показа: вердикт ниже неё —
+    # это та же пустая лента, только окольным путём.
+    floor = config.RADAR_MIN_SCORE
+    check(
+        f"оценка без модели проходит планку показа ({floor})",
+        all(v.score >= floor for v in verdicts),
+        str([v.score for v in verdicts]),
+    )
+    check(
+        "названные деньги поднимают оценку",
+        verdicts[0].score > verdicts[1].score,
+        f"{verdicts[0].score} против {verdicts[1].score}",
+    )
+
+    import texts
+
+    lead = db.Lead(
+        id=1, radar_id=1, user_id=USER, chat_id=-100, chat_title="Заказы IT",
+        msg_id=1, author_id=7, author_name="Иван", author_user="ivan",
+        text=items[0].text, score=verdicts[0].score, budget=30000,
+        currency="RUB", urgency="high", stack=[], summary="Бот записи",
+        verdict="order", judged=False, repeats=0, notified=False, created_at=0,
+    )
+    card = texts.lead_card(lead, None)
+    check("карточка честно пишет, что модель не разбирала",
+          "без разбора моделью" in card, card.splitlines()[0])
+    check("и не показывает выдуманную оценку", "/100" not in card)
+
+    # Поднятая планка не должна глушить ленту у тех, у кого ключа нет:
+    # оценка от регулярок ей не подчиняется, а фильтр по бюджету — да.
+    import radar as radar_mod
+
+    strict = db.Radar(
+        id=1, user_id=USER, account_id=1, title="Строгий",
+        profile="боты", keywords="", min_budget=0, currency="RUB",
+        min_score=95, status="running", seen=0, passed=0, found=0,
+        note=None, created_at=0,
+    )
+    shown = []
+
+    async def catch(_bot, _user_id, text):
+        shown.append(text)
+
+    saved = radar_mod._tell
+    radar_mod._tell = catch
+    try:
+        for item, verdict in zip(items, verdicts):
+            await radar_mod._store(None, strict, item, verdict, strict.min_score)
+    finally:
+        radar_mod._tell = saved
+
+    check("высокая планка не глушит ленту без модели", len(shown) == 2,
+          f"показано {len(shown)} из 2")
+    check("найденное без модели записалось заказом",
+          len(await db.leads(USER, verdict="order")) >= 2)
+
+
 def check_wiring() -> None:
     print("\nСборка")
     check("роутер бота собран", handlers.router.name == "menu")
+    import radar_ui
+
+    check("роутер радара собран", radar_ui.router.name == "radar")
+    # Радар обязан стоять впереди общего роутера: у handlers последним
+    # висит хендлер на любое сообщение в личке, и команды радара он бы
+    # съел — молча, без единой ошибки в логе.
+    source = (config.BASE_DIR / "main.py").read_text(encoding="utf-8")
+    check(
+        "радар подключён раньше общего роутера",
+        source.index("radar_ui.router") < source.index("handlers.router"),
+    )
+    check("воркер радара запускается", "radar.worker(bot)" in source)
+    check("воркер радара останавливается", "scout)" in source)
     routes = {
         f"{route.method} {route.resource.canonical}"
         for route in webapp.build().router.routes()
@@ -2522,6 +2950,11 @@ async def run() -> None:
         await check_ban_and_faq()
         await check_paid_chats()
         await check_watches()
+        await check_radar_filter()
+        await check_radar_verdicts()
+        await check_radar_storage()
+        check_radar_card()
+        await check_radar_offline()
         await check_joins()
         await check_footer_on_media()
         await check_api()

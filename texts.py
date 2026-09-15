@@ -548,3 +548,119 @@ def stats(numbers: dict[str, int]) -> str:
         f"Аккаунтов подключено: <b>{numbers.get('accounts', 0)}</b>, "
         f"из них живых: <b>{numbers.get('accounts_ok', 0)}</b>"
     )
+
+
+# --- радар заказов ----------------------------------------------------
+
+#: Как называть срочность по-русски. Пустая строка значит «обычная» —
+#: писать её в карточке незачем, это шум в самом заметном месте.
+URGENCY = {"high": "🔥 срочно", "low": "не горит", "normal": ""}
+
+
+def money(amount: int, currency: str | None) -> str:
+    """Бюджет человеческими цифрами.
+
+    Разряды разделяются узким пробелом: «25 000 ₽» читается с одного
+    взгляда, «25000» — нет, а карточку заказа именно проглядывают.
+    """
+    if not amount:
+        return "бюджет не назван"
+    sign = {"RUB": "₽", "USD": "$", "EUR": "€"}.get(
+        (currency or "").upper(), escape(currency or "")
+    )
+    return f"{amount:,}".replace(",", " ") + (f" {sign}" if sign else "")
+
+
+def lead_card(lead: db.Lead, link: str | None) -> str:
+    """Карточка найденного заказа.
+
+    Порядок строк выбран под одно движение: сначала суть и деньги —
+    по ним решают, читать ли дальше, — и только потом текст и автор.
+    Ссылка последняя и отдельной строкой: по ней нажимают, и она не
+    должна тонуть в середине.
+    """
+    # Без разбора моделью «заказ» означает лишь «прошло по словам», и
+    # заголовок обязан это показывать. Иначе человек прочитает оценку
+    # как суждение, увидит под ней ерунду и перестанет верить оценкам
+    # вообще — в том числе настоящим, когда ключ появится.
+    head = (
+        f"🎯 <b>Заказ</b> · {lead.score}/100" if lead.judged
+        else "🎯 <b>Похоже на заказ</b> · без разбора моделью"
+    )
+    if lead.repeats:
+        head += f" · повтор в {lead.repeats + 1} чатах"
+
+    lines = [head, ""]
+    if lead.summary:
+        lines.append(f"<b>{escape(lead.summary)}</b>")
+
+    facts = [money(lead.budget, lead.currency)]
+    mood = URGENCY.get(lead.urgency, "")
+    if mood:
+        facts.append(mood)
+    lines.append("💰 " + " · ".join(facts))
+
+    if lead.stack:
+        lines.append("🧩 " + escape(", ".join(lead.stack)))
+
+    # Текст режем: карточка должна читаться в уведомлении целиком, а
+    # полное объявление всё равно в одном нажатии по ссылке.
+    body = lead.text.strip()
+    if len(body) > 400:
+        body = body[:400].rstrip() + "…"
+    lines += ["", f"<blockquote>{escape(body)}</blockquote>", ""]
+
+    who = escape(lead.author_name)
+    if lead.author_user:
+        who += f" (@{escape(lead.author_user)})"
+    lines.append(f"👤 {who} · чат «{escape(lead.chat_title)}»")
+
+    if link:
+        lines.append(f'🔗 <a href="{escape(link)}">Открыть сообщение</a>')
+    return "\n".join(lines)
+
+
+def radar_quota_hit() -> str:
+    return (
+        "📉 <b>Разбор заказов встал до завтра.</b>\n\n"
+        f"За сутки израсходован лимит в {config.RADAR_DAILY_CALLS} "
+        "обращений к классификатору. Радар продолжает собирать "
+        "сообщения, но смысл в них пока не разбирает — новые заказы в "
+        "ленте появятся после полуночи.\n\n"
+        "Если лимит кончается каждый день, это обычно значит, что чатов "
+        "в радаре больше, чем нужно, или ключевые слова слишком общие."
+    )
+
+
+def radar_line(radar: db.Radar, chats: int) -> str:
+    """Строка радара в списке."""
+    mark = {"running": "🟢", "stopped": "⏸", "error": "⚠️"}.get(radar.status, "•")
+    # Отношение «увидено / прошло сито» здесь не для отчётности: по нему
+    # человек и понимает, что ключевые слова подобраны мимо.
+    return (
+        f"{mark} <b>{escape(radar.title)}</b> — {chats} "
+        f"{plural(chats, 'чат', 'чата', 'чатов')}\n"
+        f"    просмотрено {radar.seen}, до разбора дошло {radar.passed}, "
+        f"заказов {radar.found}"
+    )
+
+
+def radar_stats(stats: dict, usage: tuple[int, int], hours: int) -> str:
+    """Сводка за период — то, ради чего первая фаза и делается.
+
+    Пока неизвестно, сколько заказов в сутки дают чаты, автоматизировать
+    ответы не на чем: три заказа в сутки автоматизации не требуют.
+    """
+    orders = stats.get("order", 0)
+    skipped = stats.get("skip", 0)
+    calls, msgs = usage
+    return (
+        f"📊 <b>Радар за {hours} {plural(hours, 'час', 'часа', 'часов')}</b>\n\n"
+        f"Заказов найдено: <b>{orders}</b>\n"
+        f"Отсеяно классификатором: {skipped}\n"
+        f"Средняя оценка заказа: {stats.get('avg_score', 0)}/100\n\n"
+        f"Сегодня разобрано {msgs} "
+        f"{plural(msgs, 'сообщение', 'сообщения', 'сообщений')} "
+        f"за {calls} {plural(calls, 'запрос', 'запроса', 'запросов')} "
+        f"к модели."
+    )
