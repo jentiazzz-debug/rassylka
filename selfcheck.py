@@ -550,11 +550,21 @@ async def check_broadcast() -> None:
 
     check(f"пишет по очереди: {order}", order == [-1001, -1002, 3003, -1001],
           str(order))
-    check("ушло четыре сообщения", len(FAKE.sent) == 4, str(len(FAKE.sent)))
+    # Личный диалог в круге остался от старой базы, но сообщение туда не
+    # ушло: рассылка в личку — то, за что Telegram блокирует аккаунты
+    # быстрее всего, и правило действует даже для заведённых раньше.
+    check("в личку не написали", len(FAKE.sent) == 3, str(len(FAKE.sent)))
+    check("в журнале сказано почему",
+          any("личные сообщения" in (row["error"] or "")
+              for row in await db.sends(campaign.id)),
+          str([row["error"] for row in await db.sends(campaign.id)]))
 
     after = await db.campaign(USER, campaign.id)
     check("круг засчитан", after.cycles == 1, str(after.cycles))
-    check("счётчик удачных сходится", after.sent_ok == 4, str(after.sent_ok))
+    # Три удачных и одна пропущенная личка: круг прошёл целиком.
+    check("счётчик удачных сходится", after.sent_ok == 3, str(after.sent_ok))
+    check("пропущенная личка попала в ошибки",
+          after.sent_err == 1, str(after.sent_err))
 
     # Подпись бесплатного тарифа.
     check("на бесплатном дописывается подпись",
@@ -1977,6 +1987,75 @@ async def check_attached_media() -> None:
           and "return packVariants(draft);" in js)
 
 
+async def check_no_private() -> None:
+    print("\nЛичные сообщения")
+
+    # Личный диалог не должен попасть в базу вовсе. Проверяем на самом
+    # разборе диалогов: интерфейс можно обойти, а сканирование — нет.
+    class Entity:
+        def __init__(self, kind, id_):
+            self.id = id_
+            self.bot = False
+            self.access_hash = 1
+            self.title = "Чат"
+            self.username = None
+            self.broadcast = False
+            self.megagroup = kind == "group"
+            self.first_name = "Человек"
+            self.last_name = None
+            self._kind = kind
+
+    class Dialog:
+        def __init__(self, entity):
+            self.entity = entity
+
+    from telethon.tl.types import Channel, User
+
+    person = User(id=777, access_hash=1, first_name="Человек")
+    group = Channel(id=888, title="Группа", photo=None, date=None,
+                    access_hash=2, megagroup=True)
+
+    class FakeClient:
+        def iter_dialogs(self, limit=0):
+            async def gen():
+                for entity in (person, group):
+                    yield Dialog(entity)
+            return gen()
+
+    rows = await chats._read_dialogs(FakeClient())
+    kinds = {row["kind"] for row in rows}
+    check("личный диалог в базу не попадает", "user" not in kinds, str(kinds))
+    check("группа попадает", "channel" in kinds or "chat" in kinds, str(kinds))
+
+    # Даже если личка осталась от старого сканирования, выбрать её в
+    # рассылку нельзя: ручка сверяет список с чатами аккаунта и
+    # отбрасывает личные.
+    source = (Path(__file__).parent / "webapp.py").read_text(encoding="utf-8")
+    check("ручка отсекает личные чаты",
+          'if chat.kind != "user"' in source)
+
+    # И последняя линия — сама отправка.
+    engine = (Path(__file__).parent / "broadcast.py").read_text(encoding="utf-8")
+    check("отправка отказывается писать в личку",
+          "class PrivateChat" in engine
+          and 'if chat.kind == "user":' in engine)
+    check("и пишет причину в журнал",
+          "в личные сообщения рассылка не идёт" in engine)
+
+    # Папка «контакты» больше ничего не разворачивает: разворачивать
+    # нечем, личных диалогов в базе нет.
+    folders = (Path(__file__).parent / "chats.py").read_text(encoding="utf-8")
+    check("папка контактов не разворачивается",
+          'chat_ids += by_kind["user"]' not in folders)
+
+    # И людям про это сказано — иначе они будут искать личку в списке.
+    check("в приветствии сказано про личку",
+          "В личные сообщения бот не пишет" in texts.start(None, await db.subscription(USER)))
+    check("в частых вопросах есть объяснение",
+          any("личные сообщения" in item["q"] for item in faq.items()),
+          str([item["q"] for item in faq.items()]))
+
+
 async def check_tickets() -> None:
     print("\nТикеты поддержки")
     await db.ensure_user(USER, "test", "Тест Тестов")
@@ -2946,6 +3025,7 @@ async def run() -> None:
         await check_platega()
         await check_variants()
         await check_attached_media()
+        await check_no_private()
         await check_tickets()
         await check_ban_and_faq()
         await check_paid_chats()
