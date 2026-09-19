@@ -75,6 +75,19 @@ async def _read_dialogs(client) -> list[dict]:
         # они занимают место и путают.
         if getattr(entity, "bot", False):
             continue
+        # Личные диалоги не берём вовсе — ни в список, ни в базу.
+        #
+        # Рассылка в личку это ровно то, за что Telegram выдаёт
+        # PeerFlood и блокирует номера: жалоба получателя там стоит
+        # дороже сотни сообщений в группу, где человека никто не звал
+        # лично. Сервису без этого проще везде — и с Telegram, и с
+        # банком, и с самими аккаунтами, которые перестают гореть.
+        #
+        # Не сохранять, а не прятать в интерфейсе: чужая переписка не
+        # должна лежать у нас в базе просто потому, что аккаунт её
+        # видел.
+        if _kind(entity) == "user":
+            continue
         rows.append(
             {
                 "chat_id": utils.get_peer_id(entity),
@@ -125,7 +138,7 @@ async def _read_folders(client, known: list[dict]) -> list[dict]:
     raw_filters = getattr(answer, "filters", answer) or []
     by_kind: dict[str, list[int]] = {"user": [], "chat": [], "channel": []}
     for row in known:
-        by_kind[row["kind"]].append(row["chat_id"])
+        by_kind.setdefault(row["kind"], []).append(row["chat_id"])
 
     out: list[dict] = []
     for raw in raw_filters:
@@ -157,8 +170,9 @@ async def _read_folders(client, known: list[dict]) -> list[dict]:
                 row["chat_id"] for row in known
                 if row["kind"] == "channel" and row.get("broadcast")
             ]
-        if getattr(raw, "contacts", False) or getattr(raw, "non_contacts", False):
-            chat_ids += by_kind["user"]
+        # Папки вида «контакты» и «не контакты» разворачивать больше
+        # нечем: личные диалоги в базу не попадают. Такая папка просто
+        # окажется пустой — и это честно, писать личке мы не будем.
 
         excluded = set()
         for peer in getattr(raw, "exclude_peers", []) or []:
