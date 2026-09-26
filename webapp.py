@@ -1258,7 +1258,13 @@ async def api_campaign_create(
     # Сверяем с кэшем аккаунта: список приходит из браузера, и принимать
     # оттуда произвольные id нельзя — так можно было бы заказать рассылку
     # в чат, которого у аккаунта нет.
-    known = {chat.chat_id for chat in await db.chats(account.id)}
+    # Личные диалоги отсекаются здесь же: в свежей базе их нет вовсе, но
+    # у тех, кто сканировал чаты раньше, они остались, и правило должно
+    # действовать для всех сразу.
+    known = {
+        chat.chat_id for chat in await db.chats(account.id)
+        if chat.kind != "user"
+    }
     chat_ids = [chat_id for chat_id in wanted if chat_id in known]
     if not chat_ids:
         return _fail("Выберите хотя бы один чат.")

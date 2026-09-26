@@ -352,6 +352,114 @@ CREATE TABLE IF NOT EXISTS account_pauses (
     until      INTEGER NOT NULL,
     reason     TEXT
 );
+
+-- Радар заказов: набор чатов, которые аккаунт слушает, и профиль
+-- исполнителя, под который меряется найденное.
+--
+-- Отдельно от watches намеренно, хотя механика слушателя та же. У
+-- наблюдения за каналом единица работы — пост, и на каждый пост есть
+-- ответ. Здесь единица работы — сообщение в чате, и на девятьсот из
+-- тысячи ответа нет: радар ничего не пишет, он читает и отбирает.
+-- Общая таблица дала бы строки, у которых половина полей мертва.
+CREATE TABLE IF NOT EXISTS radars (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    account_id INTEGER NOT NULL,
+    title      TEXT    NOT NULL DEFAULT 'Радар',
+    -- Чем человек занимается, его словами. Уходит в системный промпт
+    -- классификатора: «заказ» в отрыве от вопроса «чей» не определяется
+    -- вообще никак — в чате по ботам заказ на логотип мусор, а в чате
+    -- по дизайну он же лид.
+    profile    TEXT    NOT NULL DEFAULT '',
+    -- Слова, по которым предфильтр отбирает кандидатов, через запятую.
+    -- Пусто — доменного отбора нет, и в модель уходит всё, что похоже
+    -- на заказ вообще. Это дороже, но на старте честнее: какие слова
+    -- работают в конкретных чатах, заранее не знает никто.
+    keywords   TEXT    NOT NULL DEFAULT '',
+    -- Ниже этого бюджета лид не показываем. 0 — показывать любые, в том
+    -- числе те, где бюджет не назван.
+    min_budget INTEGER NOT NULL DEFAULT 0,
+    currency   TEXT    NOT NULL DEFAULT 'RUB',
+    -- Своя планка оценки поверх общей. 0 — брать общую из настроек.
+    min_score  INTEGER NOT NULL DEFAULT 0,
+    status     TEXT    NOT NULL DEFAULT 'running',
+    -- Счётчики за всё время. Нужны не для красоты: по отношению
+    -- «прошло предфильтр / признано заказом» видно, что предфильтр
+    -- настроен мимо, задолго до того, как это заметит человек.
+    seen       INTEGER NOT NULL DEFAULT 0,
+    passed     INTEGER NOT NULL DEFAULT 0,
+    found      INTEGER NOT NULL DEFAULT 0,
+    note       TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_radars_user ON radars(user_id);
+CREATE INDEX IF NOT EXISTS idx_radars_live ON radars(status);
+
+-- Чаты одного радара. Курсор на каждый свой: чаты разной живости, и
+-- общая отметка «досюда прочитано» у них невозможна.
+CREATE TABLE IF NOT EXISTS radar_chats (
+    radar_id    INTEGER NOT NULL,
+    chat_id     INTEGER NOT NULL,
+    title       TEXT,
+    last_msg_id INTEGER NOT NULL DEFAULT 0,
+    added_at    INTEGER NOT NULL,
+    PRIMARY KEY (radar_id, chat_id)
+);
+
+-- Найденные заказы.
+--
+-- Ключевое здесь — fingerprint и уникальный индекс по нему. Один и тот
+-- же заказ, разосланный веером по десяти чатам, — не исключение, а
+-- норма: показать его десять раз значит превратить ленту лидов в то
+-- самое, от чего она спасает. Повтор не создаёт строку, а увеличивает
+-- repeats у первой.
+CREATE TABLE IF NOT EXISTS leads (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    radar_id    INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    chat_id     INTEGER NOT NULL,
+    chat_title  TEXT,
+    msg_id      INTEGER NOT NULL,
+    author_id   INTEGER NOT NULL DEFAULT 0,
+    author_name TEXT,
+    author_user TEXT,
+    text        TEXT    NOT NULL DEFAULT '',
+    fingerprint TEXT    NOT NULL,
+    -- Оценка 0..100 и разбор от классификатора.
+    score       INTEGER NOT NULL DEFAULT 0,
+    budget      INTEGER NOT NULL DEFAULT 0,
+    currency    TEXT,
+    urgency     TEXT,
+    stack       TEXT,
+    summary     TEXT,
+    -- order — заказ, skip — модель отвергла. Отвергнутые тоже пишем:
+    -- без них не видно, что именно классификатор выбрасывает, и
+    -- настроить профиль вслепую нельзя.
+    verdict     TEXT    NOT NULL DEFAULT 'order',
+    -- Разбирала ли находку модель. 0 значит, что вердикт собран одними
+    -- регулярками: ключа не было или он не работал. Карточка об этом
+    -- пишет честно — иначе человек решит, что модель считает заказом
+    -- любую ерунду, и перестанет верить оценкам вообще.
+    judged      INTEGER NOT NULL DEFAULT 1,
+    repeats     INTEGER NOT NULL DEFAULT 0,
+    notified    INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_leads_user ON leads(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_leads_radar ON leads(radar_id, verdict);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_fp ON leads(user_id, fingerprint);
+
+-- Расход классификатора по суткам. В базе, а не в памяти: суточный
+-- потолок, обнуляемый передеплоем, — это не потолок.
+CREATE TABLE IF NOT EXISTS radar_usage (
+    user_id INTEGER NOT NULL,
+    day     TEXT    NOT NULL,
+    calls   INTEGER NOT NULL DEFAULT 0,
+    msgs    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, day)
+);
 """
 
 _db: aiosqlite.Connection | None = None
@@ -2118,3 +2226,423 @@ async def _fetchall(sql: str, args: tuple = ()) -> list[aiosqlite.Row]:
 
 # Псевдоним для админки: см. комментарий выше.
 subscription_of = subscription
+
+
+# --- радар заказов ----------------------------------------------------
+
+
+@dataclass(slots=True)
+class Radar:
+    id: int
+    user_id: int
+    account_id: int
+    title: str
+    #: Чем человек занимается. Уходит в промпт классификатора.
+    profile: str
+    #: Слова доменного отбора. Пусто — отбора нет.
+    keywords: str
+    min_budget: int
+    currency: str
+    #: 0 — брать общую планку из настроек.
+    min_score: int
+    status: str
+    seen: int
+    passed: int
+    found: int
+    note: str | None
+    created_at: int
+
+
+@dataclass(slots=True)
+class RadarChat:
+    radar_id: int
+    chat_id: int
+    title: str
+    last_msg_id: int
+
+
+@dataclass(slots=True)
+class Lead:
+    id: int
+    radar_id: int
+    user_id: int
+    chat_id: int
+    chat_title: str
+    msg_id: int
+    author_id: int
+    author_name: str
+    author_user: str | None
+    text: str
+    score: int
+    budget: int
+    currency: str | None
+    urgency: str | None
+    stack: list[str]
+    summary: str
+    verdict: str
+    #: Разбирала ли находку модель. False — вердикт от регулярок.
+    judged: bool
+    repeats: int
+    notified: bool
+    created_at: int
+
+
+def _radar(row: aiosqlite.Row) -> Radar:
+    return Radar(
+        id=row["id"],
+        user_id=row["user_id"],
+        account_id=row["account_id"],
+        title=row["title"] or "Радар",
+        profile=row["profile"] or "",
+        keywords=row["keywords"] or "",
+        min_budget=int(row["min_budget"] or 0),
+        currency=row["currency"] or "RUB",
+        min_score=int(row["min_score"] or 0),
+        status=row["status"],
+        seen=int(row["seen"] or 0),
+        passed=int(row["passed"] or 0),
+        found=int(row["found"] or 0),
+        note=row["note"],
+        created_at=row["created_at"],
+    )
+
+
+def _lead(row: aiosqlite.Row) -> Lead:
+    try:
+        stack = json.loads(row["stack"] or "[]")
+    except (ValueError, TypeError):
+        stack = []
+    return Lead(
+        id=row["id"],
+        radar_id=row["radar_id"],
+        user_id=row["user_id"],
+        chat_id=row["chat_id"],
+        chat_title=row["chat_title"] or str(row["chat_id"]),
+        msg_id=row["msg_id"],
+        author_id=int(row["author_id"] or 0),
+        author_name=row["author_name"] or "без имени",
+        author_user=row["author_user"],
+        text=row["text"] or "",
+        score=int(row["score"] or 0),
+        budget=int(row["budget"] or 0),
+        currency=row["currency"],
+        urgency=row["urgency"],
+        stack=stack if isinstance(stack, list) else [],
+        summary=row["summary"] or "",
+        verdict=row["verdict"],
+        judged=bool(row["judged"]),
+        repeats=int(row["repeats"] or 0),
+        notified=bool(row["notified"]),
+        created_at=row["created_at"],
+    )
+
+
+async def create_radar(user_id: int, account_id: int, title: str,
+                       profile: str) -> Radar:
+    now = int(time.time())
+    cursor = await _conn().execute(
+        "INSERT INTO radars (user_id, account_id, title, profile, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (user_id, account_id, title.strip()[:64] or "Радар", profile.strip(), now),
+    )
+    await _conn().commit()
+    found = await radar_by_id(int(cursor.lastrowid))
+    assert found is not None
+    return found
+
+
+async def radars(user_id: int) -> list[Radar]:
+    async with _conn().execute(
+        "SELECT * FROM radars WHERE user_id = ? ORDER BY id", (user_id,)
+    ) as cursor:
+        return [_radar(row) for row in await cursor.fetchall()]
+
+
+async def radar(user_id: int, radar_id: int) -> Radar | None:
+    async with _conn().execute(
+        "SELECT * FROM radars WHERE user_id = ? AND id = ?", (user_id, radar_id)
+    ) as cursor:
+        row = await cursor.fetchone()
+    return _radar(row) if row else None
+
+
+async def radar_by_id(radar_id: int) -> Radar | None:
+    async with _conn().execute(
+        "SELECT * FROM radars WHERE id = ?", (radar_id,)
+    ) as cursor:
+        row = await cursor.fetchone()
+    return _radar(row) if row else None
+
+
+async def radars_running() -> list[Radar]:
+    """Радары, которые должны слушать прямо сейчас.
+
+    Аккаунт проверяется здесь же: радар на отвалившемся аккаунте — это
+    слушатель, который всё равно не поднимется, и незачем пытаться
+    каждый тик.
+    """
+    async with _conn().execute(
+        "SELECT r.* FROM radars r "
+        "JOIN accounts a ON a.id = r.account_id "
+        "WHERE r.status = 'running' AND a.status = 'ok'"
+    ) as cursor:
+        return [_radar(row) for row in await cursor.fetchall()]
+
+
+async def count_radars(user_id: int) -> int:
+    async with _conn().execute(
+        "SELECT COUNT(*) AS n FROM radars WHERE user_id = ?", (user_id,)
+    ) as cursor:
+        row = await cursor.fetchone()
+    return int(row["n"]) if row else 0
+
+
+async def set_radar_status(radar_id: int, status: str,
+                           note: str | None = None) -> None:
+    await _conn().execute(
+        "UPDATE radars SET status = ?, note = COALESCE(?, note) WHERE id = ?",
+        (status, note, radar_id),
+    )
+    await _conn().commit()
+
+
+async def edit_radar(user_id: int, radar_id: int, *, title: str | None = None,
+                     profile: str | None = None, keywords: str | None = None,
+                     min_budget: int | None = None,
+                     min_score: int | None = None) -> bool:
+    sets: list[str] = []
+    args: list[object] = []
+    if title is not None:
+        sets.append("title = ?")
+        args.append(title.strip()[:64] or "Радар")
+    if profile is not None:
+        sets.append("profile = ?")
+        args.append(profile.strip())
+    if keywords is not None:
+        sets.append("keywords = ?")
+        args.append(keywords.strip())
+    if min_budget is not None:
+        sets.append("min_budget = ?")
+        args.append(max(0, min_budget))
+    if min_score is not None:
+        sets.append("min_score = ?")
+        args.append(max(0, min(100, min_score)))
+    if not sets:
+        return False
+    args.extend((user_id, radar_id))
+    columns = ", ".join(sets)
+    cursor = await _conn().execute(
+        "UPDATE radars SET " + columns + " WHERE user_id = ? AND id = ?", args
+    )
+    await _conn().commit()
+    return cursor.rowcount > 0
+
+
+async def delete_radar(user_id: int, radar_id: int) -> bool:
+    cursor = await _conn().execute(
+        "DELETE FROM radars WHERE user_id = ? AND id = ?", (user_id, radar_id)
+    )
+    # Чаты уходят вместе с радаром, лиды остаются: найденное — это
+    # результат работы, а не её настройка, и терять его заодно с
+    # настройкой человек не просил.
+    await _conn().execute("DELETE FROM radar_chats WHERE radar_id = ?", (radar_id,))
+    await _conn().commit()
+    return cursor.rowcount > 0
+
+
+async def bump_radar(radar_id: int, *, seen: int = 0, passed: int = 0,
+                     found: int = 0) -> None:
+    await _conn().execute(
+        "UPDATE radars SET seen = seen + ?, passed = passed + ?, "
+        "found = found + ? WHERE id = ?",
+        (seen, passed, found, radar_id),
+    )
+    await _conn().commit()
+
+
+async def add_radar_chats(radar_id: int, rows: list[dict]) -> int:
+    """Добавить чаты в радар. Курсор ставится на текущее сообщение.
+
+    Разбирать задним числом написанное до включения радара незачем:
+    заказ недельной давности либо взят, либо протух, а счёт за его
+    разбор придёт настоящий.
+    """
+    now = int(time.time())
+    added = 0
+    for row in rows:
+        cursor = await _conn().execute(
+            "INSERT OR IGNORE INTO radar_chats "
+            "(radar_id, chat_id, title, last_msg_id, added_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (radar_id, int(row["chat_id"]), row.get("title"),
+             int(row.get("last_msg_id") or 0), now),
+        )
+        added += cursor.rowcount
+    await _conn().commit()
+    return added
+
+
+async def radar_chats(radar_id: int) -> list[RadarChat]:
+    async with _conn().execute(
+        "SELECT * FROM radar_chats WHERE radar_id = ? ORDER BY added_at",
+        (radar_id,),
+    ) as cursor:
+        return [
+            RadarChat(
+                radar_id=row["radar_id"],
+                chat_id=row["chat_id"],
+                title=row["title"] or str(row["chat_id"]),
+                last_msg_id=int(row["last_msg_id"] or 0),
+            )
+            for row in await cursor.fetchall()
+        ]
+
+
+async def count_radar_chats(radar_id: int) -> int:
+    async with _conn().execute(
+        "SELECT COUNT(*) AS n FROM radar_chats WHERE radar_id = ?", (radar_id,)
+    ) as cursor:
+        row = await cursor.fetchone()
+    return int(row["n"]) if row else 0
+
+
+async def remove_radar_chat(radar_id: int, chat_id: int) -> bool:
+    cursor = await _conn().execute(
+        "DELETE FROM radar_chats WHERE radar_id = ? AND chat_id = ?",
+        (radar_id, chat_id),
+    )
+    await _conn().commit()
+    return cursor.rowcount > 0
+
+
+async def set_radar_cursor(radar_id: int, chat_id: int, msg_id: int) -> None:
+    """Подвинуть отметку прочитанного.
+
+    Только вперёд: события и опрос идут наперегонки, и опоздавший опрос
+    иначе откатил бы отметку назад — те же сообщения ушли бы в
+    классификатор во второй раз, уже за деньги.
+    """
+    await _conn().execute(
+        "UPDATE radar_chats SET last_msg_id = ? "
+        "WHERE radar_id = ? AND chat_id = ? AND last_msg_id < ?",
+        (msg_id, radar_id, chat_id, msg_id),
+    )
+    await _conn().commit()
+
+
+async def save_lead(radar_id: int, user_id: int, fingerprint: str,
+                    fields: dict) -> tuple[Lead, bool]:
+    """Записать найденное. Второй элемент — новый ли это заказ.
+
+    Повтор того же заказа в другом чате новой строки не создаёт: у него
+    растёт repeats, а человек видит одну карточку с пометкой, в
+    скольких чатах это висит. Именно повторы и делают ленту лидов
+    нечитаемой, если с ними не бороться, — один заказ веером по десяти
+    чатам здесь норма, а не исключение.
+    """
+    async with _conn().execute(
+        "SELECT * FROM leads WHERE user_id = ? AND fingerprint = ?",
+        (user_id, fingerprint),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row is not None:
+        await _conn().execute(
+            "UPDATE leads SET repeats = repeats + 1 WHERE id = ?", (row["id"],)
+        )
+        await _conn().commit()
+        found = _lead(row)
+        found.repeats += 1
+        return found, False
+
+    now = int(time.time())
+    cursor = await _conn().execute(
+        "INSERT INTO leads (radar_id, user_id, chat_id, chat_title, msg_id, "
+        "author_id, author_name, author_user, text, fingerprint, score, "
+        "budget, currency, urgency, stack, summary, verdict, judged, "
+        "created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            radar_id, user_id, int(fields["chat_id"]), fields.get("chat_title"),
+            int(fields["msg_id"]), int(fields.get("author_id") or 0),
+            fields.get("author_name"), fields.get("author_user"),
+            (fields.get("text") or "")[:4000], fingerprint,
+            int(fields.get("score") or 0), int(fields.get("budget") or 0),
+            fields.get("currency"), fields.get("urgency"),
+            json.dumps(fields.get("stack") or [], ensure_ascii=False),
+            fields.get("summary") or "", fields.get("verdict") or "order",
+            1 if fields.get("judged", True) else 0, now,
+        ),
+    )
+    await _conn().commit()
+    async with _conn().execute(
+        "SELECT * FROM leads WHERE id = ?", (int(cursor.lastrowid),)
+    ) as got:
+        fresh = await got.fetchone()
+    return _lead(fresh), True
+
+
+async def leads(user_id: int, limit: int = 20,
+                verdict: str = "order") -> list[Lead]:
+    async with _conn().execute(
+        "SELECT * FROM leads WHERE user_id = ? AND verdict = ? "
+        "ORDER BY created_at DESC LIMIT ?",
+        (user_id, verdict, limit),
+    ) as cursor:
+        return [_lead(row) for row in await cursor.fetchall()]
+
+
+async def lead(user_id: int, lead_id: int) -> Lead | None:
+    async with _conn().execute(
+        "SELECT * FROM leads WHERE user_id = ? AND id = ?", (user_id, lead_id)
+    ) as cursor:
+        row = await cursor.fetchone()
+    return _lead(row) if row else None
+
+
+async def mark_lead_notified(lead_id: int) -> None:
+    await _conn().execute("UPDATE leads SET notified = 1 WHERE id = ?", (lead_id,))
+    await _conn().commit()
+
+
+async def radar_stats(user_id: int, since: int) -> dict:
+    """Сводка по найденному за период — для замера потока.
+
+    Ради этого первая фаза и делается без отправки: пока неизвестно,
+    сколько заказов в сутки дают чаты, автоматизировать ответы не на
+    чем.
+    """
+    async with _conn().execute(
+        "SELECT verdict, COUNT(*) AS n, AVG(score) AS avg_score "
+        "FROM leads WHERE user_id = ? AND created_at >= ? GROUP BY verdict",
+        (user_id, since),
+    ) as cursor:
+        rows = await cursor.fetchall()
+    out = {"order": 0, "skip": 0, "avg_score": 0}
+    for row in rows:
+        out[row["verdict"]] = int(row["n"])
+        if row["verdict"] == "order":
+            out["avg_score"] = int(row["avg_score"] or 0)
+    return out
+
+
+async def radar_usage_today(user_id: int) -> tuple[int, int]:
+    """Обращений к модели и разобранных сообщений за сегодня."""
+    day = time.strftime("%Y-%m-%d")
+    async with _conn().execute(
+        "SELECT calls, msgs FROM radar_usage WHERE user_id = ? AND day = ?",
+        (user_id, day),
+    ) as cursor:
+        row = await cursor.fetchone()
+    return (int(row["calls"]), int(row["msgs"])) if row else (0, 0)
+
+
+async def bump_radar_usage(user_id: int, calls: int, msgs: int) -> None:
+    day = time.strftime("%Y-%m-%d")
+    await _conn().execute(
+        "INSERT INTO radar_usage (user_id, day, calls, msgs) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(user_id, day) DO UPDATE SET "
+        "calls = calls + excluded.calls, msgs = msgs + excluded.msgs",
+        (user_id, day, calls, msgs),
+    )
+    await _conn().commit()

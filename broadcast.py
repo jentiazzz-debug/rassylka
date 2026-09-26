@@ -156,6 +156,10 @@ def classify(error: Exception) -> tuple[str, str, int]:
 # --- отправка ---------------------------------------------------------
 
 
+class PrivateChat(Exception):
+    """Личный диалог: туда рассылка не ходит."""
+
+
 def _input_peer(chat: db.Chat):
     """Собрать адресата прямо из базы, без обращения к Telegram.
 
@@ -311,6 +315,12 @@ async def _deliver(client, campaign: db.Campaign, chat: db.Chat) -> None:
     знают, поэтому такие сообщения собираются вручную; обычная отправка
     осталась как была.
     """
+    # Личные диалоги в базу больше не попадают, но у тех, кто завёл
+    # рассылку раньше, они в списке чатов остались. Проверка стоит у
+    # самой отправки: это последнее место, где ещё можно не написать.
+    if chat.kind == "user":
+        raise PrivateChat()
+
     variant = await pick_variant(campaign)
     stars = await paid_check(campaign.user_id, chat)
     peer = _input_peer(chat)
@@ -569,6 +579,17 @@ async def _handle_error(
     error: Exception,
     total: int,
 ) -> None:
+    if isinstance(error, PrivateChat):
+        # Не ошибка Telegram, а наше правило. Круг едет дальше, а в
+        # журнале остаётся причина — иначе человек будет гадать, почему
+        # часть адресатов молчит.
+        await db.log_send(
+            campaign.id, account.id, chat.chat_id, chat.title, False,
+            "в личные сообщения рассылка не идёт",
+        )
+        await _advance(campaign, total, ok=False)
+        return
+
     if isinstance(error, TooExpensive):
         # Не отказ Telegram, а наше собственное решение: чат просит
         # больше, чем человек разрешил тратить. Круг едет дальше, а в

@@ -22,6 +22,7 @@ from aiogram.types import BotCommand, BotCommandScopeChat
 import accounts
 import admin
 import broadcast
+import classify
 import comments
 import config
 import crypto
@@ -30,6 +31,8 @@ import handlers
 import keyboards
 import payments
 import platega
+import radar
+import radar_ui
 import webapp
 
 logging.basicConfig(
@@ -44,6 +47,8 @@ COMMANDS = (
     ("help", "Как это работает"),
     ("invite", "Пригласить друга"),
     ("tariffs", "Тарифы и цены"),
+    ("radar", "Радар заказов"),
+    ("leads", "Найденные заказы"),
     ("terms", "Документы"),
     ("support", "Поддержка"),
 )
@@ -82,6 +87,10 @@ async def run() -> None:
     # сообщения (приветствие, список кнопок), а у handlers последним
     # стоит хендлер на любое сообщение в личке — он бы их съел.
     dispatcher.include_router(admin.router)
+    # Радар впереди общего роутера по той же причине, что админка: у
+    # handlers последним стоит хендлер на любое сообщение в личке, и
+    # команды радара он бы съел.
+    dispatcher.include_router(radar_ui.router)
     dispatcher.include_router(handlers.router)
 
     # Счета на оплату выписывает бот, а просит их мини-апп.
@@ -142,16 +151,23 @@ async def run() -> None:
     # рассылки расписание, здесь событие, и общий цикл пришлось бы
     # будить с частотой самого нетерпеливого из двух.
     watcher = asyncio.create_task(comments.worker(bot), name="comments")
+    # Радар — отдельный воркер, а не ветка в автокомментариях, хотя
+    # слушатель у них один и тот же. У комментариев на каждое событие
+    # есть ответ, у радара на девятьсот событий из тысячи ответа нет:
+    # общий цикл пришлось бы гонять с частотой радара и тормозить
+    # разбор пачек ради чужого расписания.
+    scout = asyncio.create_task(radar.worker(bot), name="radar")
     try:
         await dispatcher.start_polling(bot)
     finally:
-        for task in (sweeper, sender, invoices, watcher):
+        for task in (sweeper, sender, invoices, watcher, scout):
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
         await broadcast.close_all()
+        await classify.close()
         # Незавершённые входы держат подключения к Telegram: закрываем их
         # руками, иначе процесс не завершается до таймаута.
         await accounts.close_all()
