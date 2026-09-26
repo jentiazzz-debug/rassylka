@@ -85,6 +85,34 @@ def price_for(coins: int) -> float | None:
     return round(coins * config.RUB_PER_COIN, 2)
 
 
+def metadata(user_id: int, username: str | None) -> dict:
+    """Кто платит и через какого бота — то, что требует Platega.
+
+    Поля названы так, как их назвал менеджер кассы, и все четыре
+    обязательны: без них касса считает интеграцию неполной и может
+    отключить приём. Это требование её антифрода, а не наша прихоть.
+
+    Ник пишется с «собакой», id — строкой: так в примере Platega, и
+    сверяют они по точному виду. Ника у человека может не быть — тогда
+    уходит его id, пустое поле касса примет за недосмотр.
+
+    userId и userName остались от первой версии интеграции: их просила
+    ранняя инструкция, и убирать то, что касса однажды уже приняла,
+    незачем.
+    """
+    bot_id = config.BOT_TOKEN.split(":", 1)[0] if config.BOT_TOKEN else ""
+    bot_name = f"@{config.BOT_USERNAME}" if config.BOT_USERNAME else ""
+    buyer = f"@{username}" if username else str(user_id)
+    return {
+        "tg_bot_id": bot_id,
+        "tg_bot_username": bot_name,
+        "tg_id": str(user_id),
+        "tg_username": buyer,
+        "userId": str(user_id),
+        "userName": buyer,
+    }
+
+
 async def create(user_id: int, coins: int, username: str | None) -> dict:
     """Выставить счёт. Возвращает {'url': ..., 'id': ...}."""
     if not config.platega_ready():
@@ -103,11 +131,7 @@ async def create(user_id: int, coins: int, username: str | None) -> dict:
         "payload": json.dumps(
             {"user_id": user_id, "coins": coins}, ensure_ascii=False
         ),
-        # userId просит сама Platega — он нужен её антифроду.
-        "metadata": {
-            "userId": str(user_id),
-            "userName": f"@{username}" if username else str(user_id),
-        },
+        "metadata": metadata(user_id, username),
     }
     if config.WEBAPP_URL:
         payload["return"] = f"{config.WEBAPP_URL}/paid"
