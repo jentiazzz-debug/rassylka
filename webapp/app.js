@@ -488,7 +488,8 @@ function renderProfile() {
   $('me-id').textContent = 'ID: ' + me.id;
 
   $('coins-value').textContent = me.stats.coins || 0;
-  $('coins-label').textContent = me.coin_name + ' — ими оплачивается подписка';
+  $('coins-unit').textContent = me.coin_name;
+  $('coins-label').textContent = 'ими оплачивается подписка';
 
   fillStats($('me-stats'), [
     ['Аккаунтов', me.stats.accounts || 0],
@@ -2863,6 +2864,16 @@ function wire() {
   }
 
   $('open-topup').onclick = openTopup;
+  // «Подписка» и «История» в кошельке не открывают новых экранов, а
+  // ведут к своим разделам профиля: всё это уже есть ниже, и второй
+  // экран с тем же содержимым только запутал бы.
+  for (const button of document.querySelectorAll('[data-scroll]')) {
+    button.onclick = () => {
+      const target = $(button.dataset.scroll);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      haptic('light');
+    };
+  }
   $('topup-custom').onclick = askTopupCustom;
   $('topup-own-apply').onclick = applyTopupCustom;
   $('topup-own-input').onkeydown = (event) => {

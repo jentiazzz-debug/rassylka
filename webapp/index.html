@@ -224,16 +224,48 @@
 
     <!-- Баланс и состояние подписки — одна панель: это про одно и то же,
          и разносить их по двум карточкам незачем. -->
-    <div class="panel balance">
-      <div class="coins-row">
-        <svg class="ic" viewBox="0 0 24 24"><use href="#i-coin"/></svg>
-        <span class="coins-value" id="coins-value">0</span>
+    <!-- Кошелёк. Карточка, а не строчка в панели: баланс — главное,
+         что человек ищет в профиле, и главное, что он здесь делает, —
+         пополнить. Три круглые кнопки под числом — ровно те три
+         действия, за которыми сюда приходят, и все в один тап. -->
+    <div class="wallet">
+      <div class="wallet-top">
+        <span class="wallet-chip">
+          <svg class="ic" viewBox="0 0 24 24"><use href="#i-coin"/></svg>
+        </span>
+        <span class="wallet-label">Баланс</span>
       </div>
-      <div class="hint" id="coins-label">монет</div>
-      <div id="sub-card" class="sub-strip">
-        <div class="sub-title" id="sub-title">—</div>
-        <div class="sub-note" id="sub-note"></div>
+      <div class="wallet-sum">
+        <span class="wallet-value" id="coins-value">0</span>
+        <span class="wallet-unit" id="coins-unit">Slx</span>
       </div>
+      <div class="wallet-note" id="coins-label">ими оплачивается подписка</div>
+
+      <div class="wallet-actions">
+        <button class="wallet-act" id="open-topup">
+          <span class="wallet-round">
+            <svg class="ic" viewBox="0 0 24 24"><use href="#i-plus"/></svg>
+          </span>
+          Пополнить
+        </button>
+        <button class="wallet-act" data-scroll="plans">
+          <span class="wallet-round">
+            <svg class="ic" viewBox="0 0 24 24"><use href="#i-star"/></svg>
+          </span>
+          Подписка
+        </button>
+        <button class="wallet-act" data-scroll="coin-history">
+          <span class="wallet-round">
+            <svg class="ic" viewBox="0 0 24 24"><use href="#i-clock"/></svg>
+          </span>
+          История
+        </button>
+      </div>
+    </div>
+
+    <div id="sub-card" class="panel sub-strip">
+      <div class="sub-title" id="sub-title">—</div>
+      <div class="sub-note" id="sub-note"></div>
     </div>
 
     <h2 class="section-title">Платные чаты</h2>
@@ -269,14 +301,6 @@
     <p class="hint small pad">
       Подписка снимает подпись о боте в конце сообщений и продлевает
       доступ к рассылкам.
-    </p>
-
-    <button id="open-topup" class="btn primary">
-      <svg class="ic" viewBox="0 0 24 24"><use href="#i-wallet"/></svg>
-      Пополнить баланс
-    </button>
-    <p class="hint small pad">
-      Telegram Stars, банковская карта, СБП или криптовалюта.
     </p>
 
     <h2 class="section-title">Приглашайте друзей</h2>
