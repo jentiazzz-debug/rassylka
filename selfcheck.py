@@ -1768,6 +1768,32 @@ async def check_cast_buttons() -> None:
           all("username" in row and "name" in row for row in people), str(people))
 
 
+def check_platega_metadata() -> None:
+    """Metadata в счёте Platega — в точности как просил менеджер кассы.
+
+    Без этих полей касса считает интеграцию неполной и может отключить
+    приём платежей, поэтому проверяется и набор, и вид каждого поля.
+    """
+    print("\nPlatega: данные о покупателе")
+    config.BOT_TOKEN = "8877116418:TEST"
+    config.BOT_USERNAME = "AutoPosting_Chatbot"
+
+    meta = platega.metadata(555001, "vanya")
+    for field in ("tg_bot_id", "tg_bot_username", "tg_id", "tg_username"):
+        check(f"поле {field} есть и не пустое", bool(meta.get(field)), str(meta))
+    check("id бота — из токена", meta["tg_bot_id"] == "8877116418", str(meta))
+    check("ник бота с собакой", meta["tg_bot_username"] == "@AutoPosting_Chatbot")
+    check("id покупателя строкой", meta["tg_id"] == "555001")
+    check("ник покупателя с собакой", meta["tg_username"] == "@vanya")
+
+    # Ника может не быть — пустое поле касса примет за недосмотр.
+    bare = platega.metadata(555002, None)
+    check("без ника уходит id, а не пустота", bare["tg_username"] == "555002",
+          str(bare))
+
+    config.BOT_TOKEN = "123456:TEST-TOKEN-FOR-SELFCHECK"
+
+
 async def check_platega() -> None:
     print("\nОплата рублями (Platega)")
     config.PLATEGA_MERCHANT = "merchant-123"
@@ -2619,6 +2645,7 @@ async def run() -> None:
         await check_tariffs_message()
         await check_variables()
         await check_cast_buttons()
+        check_platega_metadata()
         await check_platega()
         await check_variants()
         await check_attached_media()
