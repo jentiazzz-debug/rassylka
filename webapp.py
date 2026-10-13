@@ -1443,6 +1443,33 @@ async def asset(request: web.Request) -> web.Response:
     )
 
 
+#: Картинки оформления: обои, солик в логотипе и на карточке баланса.
+#: Тоже по списку — папку целиком наружу не открываем.
+FX_FILES = {
+    "pattern.png": "image/png",
+    "cat-mark.jpg": "image/jpeg",
+    "cat-hero.jpg": "image/jpeg",
+}
+
+
+async def fx_asset(request: web.Request) -> web.Response:
+    """Картинки оформления. В отличие от скрипта, их можно кэшировать:
+    меняются они редко, а тянуть обои заново при каждом открытии — лишняя
+    задержка на старте."""
+    name = request.match_info.get("name", "")
+    kind = FX_FILES.get(name)
+    if kind is None:
+        raise web.HTTPNotFound()
+    path = config.WEBAPP_DIR / "fx" / name
+    if not path.exists():
+        raise web.HTTPNotFound()
+    return web.Response(
+        body=path.read_bytes(),
+        content_type=kind,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 async def legal_page(request: web.Request) -> web.Response:
     """Документы: соглашение, политика, тарифы, поддержка.
 
@@ -1746,6 +1773,7 @@ def build() -> web.Application:
             web.post("/api/admin/stats", api_admin_stats),
             web.post("/api/admin/ban", api_admin_ban),
             web.get("/{name:app\\.(?:js|css)}", asset),
+            web.get("/fx/{name}", fx_asset),
             web.post("/api/state", api_state),
             web.post("/api/login/start", api_login_start),
             web.post("/api/login/code", api_login_code),

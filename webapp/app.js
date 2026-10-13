@@ -35,7 +35,7 @@ function icon(name, cls) {
 
 const SCREENS = [
   'loading', 'main', 'phone', 'code', 'password', 'done', 'tdata', 'new',
-  'edit', 'log', 'topup', 'watch', 'ticket', 'outside',
+  'edit', 'log', 'topup', 'watch', 'ticket', 'outside', 'more',
 ];
 
 /** Разделы главного экрана. */
@@ -63,6 +63,8 @@ function show(name) {
   // рассылки она увела бы человека из середины заполнения формы.
   $('tabbar').hidden = name !== 'main';
   document.body.classList.toggle('with-tabs', name === 'main');
+  syncCoinPill();
+  refit();
   window.scrollTo(0, 0);
 }
 
@@ -73,7 +75,250 @@ function setPane(name) {
   for (const button of document.querySelectorAll('.tab-item')) {
     button.classList.toggle('active', button.dataset.pane === name);
   }
+  syncCoinPill();
+  refit();
   window.scrollTo(0, 0);
+}
+
+/** Баланс в шапке. На профиле его не дублируем: там он крупно на
+ *  карточке-кошельке, а на остальных экранах — маленькой таблеткой. */
+function syncCoinPill() {
+  const pill = $('coin-pill');
+  if (!pill) return;
+  pill.hidden = !me || current === 'loading' || current === 'outside'
+    || (current === 'main' && pane === 'profile');
+  if (me) $('coin-pill-value').textContent = me.stats.coins || 0;
+}
+
+// --- листание страницами ------------------------------------------------
+
+/* Бесконечной ленты в приложении нет нигде. Любой список длиннее
+   страницы листается: стрелки, точки и свайп по самому списку. Страница
+   запоминается по id блока, поэтому обновление состояния (а оно
+   приходит после каждого действия) не выкидывает человека на первую. */
+
+const pages = {};
+
+/** Всё, что листается: блок, его строки, сколько строк на странице
+ *  самое большее и как строку нарисовать. По этим записям refit()
+ *  перерисовывает видимые списки, когда меняется экран. */
+const pagers = {};
+
+/** Сколько строк сейчас на странице у блока. Число в вызове — потолок
+ *  для высокого экрана; refit() снижает его, пока экран не перестанет
+ *  вылезать за край: экраны у телефонов разные, и угадать одно число на
+ *  всех нельзя. */
+const caps = {};
+
+function paged(box, items, size, draw) {
+  pagers[box.id] = { box, items, size, draw };
+  caps[box.id] = Math.min(caps[box.id] || size, size);
+  drawPage(box.id);
+  if (!fitting) refit();
+}
+
+function drawPage(key, flip) {
+  const { box, items, draw } = pagers[key];
+  const size = Math.max(1, caps[key]);
+  const count = Math.max(1, Math.ceil(items.length / size));
+  const page = Math.min(pages[key] || 0, count - 1);
+  pages[key] = page;
+
+  box.textContent = '';
+  items.slice(page * size, page * size + size).forEach((item, index) => {
+    box.appendChild(draw(item, page * size + index));
+  });
+  if (flip) {
+    box.classList.remove('flip-next', 'flip-prev');
+    void box.offsetWidth;
+    box.classList.add(flip > 0 ? 'flip-next' : 'flip-prev');
+  }
+
+  let pager = $(key + '-pager');
+  if (!pager) {
+    pager = document.createElement('div');
+    pager.id = key + '-pager';
+    pager.className = 'pager';
+    box.after(pager);
+    swipeable(box);
+  }
+  pager.textContent = '';
+  pager.hidden = count < 2;
+
+  const go = (to) => {
+    if (to < 0 || to >= count || to === page) return;
+    pages[key] = to;
+    haptic('light');
+    drawPage(key, to > page ? 1 : -1);
+  };
+  box._flip = (step) => go(page + step);
+  if (count < 2) return;
+
+  const arrow = (cls, step) => {
+    const button = document.createElement('button');
+    button.className = 'pager-btn ' + cls;
+    button.setAttribute('aria-label', step > 0 ? 'Дальше' : 'Назад');
+    button.appendChild(icon('chevron'));
+    button.disabled = page + step < 0 || page + step >= count;
+    button.onclick = () => go(page + step);
+    return button;
+  };
+  pager.appendChild(arrow('prev', -1));
+  if (count <= 7) {
+    const dots = document.createElement('div');
+    dots.className = 'pager-dots';
+    for (let i = 0; i < count; i += 1) {
+      const dot = document.createElement('button');
+      dot.className = 'pager-dot' + (i === page ? ' on' : '');
+      dot.setAttribute('aria-label', 'Страница ' + (i + 1));
+      dot.onclick = () => go(i);
+      dots.appendChild(dot);
+    }
+    pager.appendChild(dots);
+  } else {
+    const num = document.createElement('span');
+    num.className = 'pager-num';
+    num.textContent = (page + 1) + ' / ' + count;
+    pager.appendChild(num);
+  }
+  pager.appendChild(arrow('next', 1));
+}
+
+let fitting = false;
+
+/** Меньше скольких строк страницу не ужимать. Обычно двух: страница из
+ *  одной строки — та же лента, только по нажатию. Но большую карточку
+ *  (рассылку, аккаунт) на крошечном экране лучше показать одну, чем
+ *  обрезать снизу. */
+function floor(key) {
+  const row = pagers[key].box.firstElementChild;
+  const tall = row && row.offsetHeight > window.innerHeight * 0.2;
+  return tall ? 1 : 2;
+}
+
+/** Подогнать видимые списки под экран. Сначала каждому возвращается его
+ *  потолок, потом, пока страница длиннее окна, у самого длинного списка
+ *  убирается по строке — но не меньше двух: страница из одной строки
+ *  превращает листание в ту же ленту, только по нажатию. */
+function refit() {
+  if (fitting) return;
+  fitting = true;
+  try {
+    const visible = Object.keys(pagers).filter((key) => {
+      const entry = pagers[key];
+      return entry.box.isConnected && entry.box.offsetParent !== null
+        && entry.items.length > 1;
+    });
+    for (const key of visible) {
+      const first = (pages[key] || 0) * caps[key];
+      caps[key] = pagers[key].size;
+      pages[key] = Math.floor(first / caps[key]);
+      drawPage(key);
+    }
+    const over = () => document.documentElement.scrollHeight > window.innerHeight + 1;
+    let guard = 60;
+    while (over() && guard > 0) {
+      guard -= 1;
+      const shrink = visible
+        .filter((key) => caps[key] > floor(key) && pagers[key].items.length >= caps[key])
+        .sort((a, b) => pagers[b].box.offsetHeight - pagers[a].box.offsetHeight)[0];
+      if (!shrink) break;
+      const first = (pages[shrink] || 0) * caps[shrink];
+      caps[shrink] -= 1;
+      pages[shrink] = Math.floor(first / caps[shrink]);
+      drawPage(shrink);
+    }
+  } finally {
+    fitting = false;
+  }
+}
+
+window.addEventListener('resize', () => {
+  clearTimeout(refit.timer);
+  refit.timer = setTimeout(refit, 150);
+});
+
+/** Свайп влево-вправо по списку листает страницы. Вертикальный жест не
+ *  трогаем — это прокрутка самого экрана. */
+function swipeable(box) {
+  let x0 = null;
+  let y0 = 0;
+  box.addEventListener('touchstart', (e) => {
+    x0 = e.touches[0].clientX;
+    y0 = e.touches[0].clientY;
+  }, { passive: true });
+  box.addEventListener('touchend', (e) => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    const dy = e.changedTouches[0].clientY - y0;
+    x0 = null;
+    if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.5 && box._flip) {
+      box._flip(dx < 0 ? 1 : -1);
+    }
+  }, { passive: true });
+}
+
+/** Спрятать листалку: в блоке вместо списка подсказка. */
+function unpage(box) {
+  const pager = $(box.id + '-pager');
+  if (pager) pager.hidden = true;
+}
+
+/** Длинные пояснения сворачиваются в «Подробнее». Короткие остаются как
+ *  есть: прятать одну строку за нажатием — лишний шаг. */
+function foldHints() {
+  for (const hint of document.querySelectorAll('.screen p.hint.small')) {
+    if (hint.closest('.fold') || hint.id) continue;
+    if (hint.textContent.trim().length < 110) continue;
+    const fold = document.createElement('details');
+    fold.className = 'fold';
+    const summary = document.createElement('summary');
+    summary.append(icon('chevron'), 'Подробнее');
+    hint.replaceWith(fold);
+    fold.append(summary, hint);
+  }
+}
+
+// --- страницы профиля ---------------------------------------------------
+
+const SUBS = {
+  plans: ['за монеты', 'Подписка'],
+  referral: ['вместе выгоднее', 'Друзья'],
+  support: ['мы рядом', 'Поддержка'],
+  faq: ['коротко', 'Вопросы'],
+  paid: ['звёзды за сообщение', 'Платные чаты'],
+  stats: ['всё посчитано', 'Сводка'],
+  legal: ['для порядка', 'Документы'],
+};
+
+/** Открытая страница профиля: «назад» с вложенного экрана (обращение,
+ *  пополнение) возвращает на неё, а не на самый верх. */
+let subOpen = null;
+
+function openSub(name) {
+  if (!SUBS[name]) return;
+  subOpen = name;
+  $('more-hand').textContent = SUBS[name][0];
+  $('more-title').textContent = SUBS[name][1];
+  for (const block of document.querySelectorAll('#screen-more .sub')) {
+    block.hidden = block.dataset.sub !== name;
+  }
+  haptic('light');
+  show('more');
+}
+
+// --- рассылки и комментарии --------------------------------------------
+
+let mailTab = 'campaigns';
+
+function setMailTab(name) {
+  mailTab = name;
+  for (const item of document.querySelectorAll('#mail-seg .seg-item')) {
+    item.classList.toggle('active', item.dataset.mail === name);
+  }
+  $('mail-campaigns').hidden = name !== 'campaigns';
+  $('mail-watches').hidden = name !== 'watches';
+  refit();
 }
 
 /** «Назад» из любого места. С экранов входа — с отменой на сервере:
@@ -84,7 +329,15 @@ async function goBack() {
     await cancelFlow();
     return;
   }
+  await home();
+}
+
+/** На главный — или на страницу профиля, с которой ушли глубже. */
+async function home() {
+  const from = current;
   await refresh();
+  if (from !== 'more' && subOpen && current === 'main') openSub(subOpen);
+  else subOpen = null;
 }
 
 function haptic(kind) {
@@ -166,19 +419,26 @@ function renderSubscription() {
   const card = $('sub-card');
   const days = sub.days_left;
   card.classList.toggle('expired', !sub.active);
+  // На карточке — коротко, полное пояснение — по нажатию.
+  card.onclick = () => alertBox($('sub-note').textContent);
 
   if (sub.kind === 'paid') {
-    $('sub-title').textContent = 'Подписка активна';
+    $('sub-title').textContent = 'Подписка до ' + dateText(sub.until);
+  } else if (sub.kind === 'trial') {
+    $('sub-title').textContent = `Пробный · ${days} ${plural(days, 'день', 'дня', 'дней')}`;
+  } else {
+    $('sub-title').textContent = 'Пробный период закончился';
+  }
+
+  if (sub.kind === 'paid') {
     $('sub-note').textContent =
       `До ${dateText(sub.until)}. Подпись о боте в сообщениях не добавляется.`;
   } else if (sub.kind === 'trial') {
-    $('sub-title').textContent = 'Пробный период';
     $('sub-note').textContent =
       `Осталось ${days} ${plural(days, 'день', 'дня', 'дней')}, до ` +
       `${dateText(sub.until)}. Пока он идёт, в конце каждого сообщения ` +
       'рассылки дописывается строка о том, каким ботом она сделана.';
   } else {
-    $('sub-title').textContent = 'Бесплатный период закончился';
     $('sub-note').textContent =
       'Аккаунты остаются подключёнными. Чтобы продолжить рассылки, ' +
       'напишите в поддержку — включим подписку.';
@@ -266,8 +526,8 @@ function accountRow(account) {
 
 function renderAccounts() {
   const box = $('accounts');
-  box.textContent = '';
-  for (const account of state.accounts) box.appendChild(accountRow(account));
+  paged(box, state.accounts, 3, accountRow);
+  box.hidden = !state.accounts.length;
   $('accounts-empty').hidden = state.accounts.length > 0;
 
   const full = state.accounts.length >= state.limits.max_accounts;
@@ -395,9 +655,12 @@ function campaignCard(campaign) {
   journal.onclick = () => openLog(campaign);
   actions.appendChild(journal);
 
+  // Удаление — значком: четыре подписи в строку не влезают, а корзину
+  // узнают и так. Подпись остаётся для экранного диктора.
   const remove = document.createElement('button');
-  remove.className = 'btn small danger';
-  remove.textContent = 'Удалить';
+  remove.className = 'btn small danger icon-only';
+  remove.setAttribute('aria-label', 'Удалить');
+  remove.appendChild(icon('trash'));
   remove.onclick = () => {
     confirmBox(`Удалить рассылку «${campaign.title}»?`, async (yes) => {
       if (!yes) return;
@@ -418,9 +681,10 @@ function campaignCard(campaign) {
 
 function renderCampaigns() {
   const box = $('campaigns');
-  box.textContent = '';
-  for (const campaign of state.campaigns) box.appendChild(campaignCard(campaign));
+  paged(box, state.campaigns, 3, campaignCard);
+  box.hidden = !state.campaigns.length;
   $('campaigns-empty').hidden = state.campaigns.length > 0;
+  $('seg-campaigns').textContent = state.campaigns.length || '';
 
   // Рассылать не с чего, пока нет живого аккаунта: кнопка есть, но
   // объясняет, чего не хватает, — так понятнее, чем спрятанная кнопка.
@@ -481,15 +745,32 @@ function renderProfile() {
     letter.textContent = (me.name || '?').trim().charAt(0).toUpperCase();
   }
 
+  const mini = $('me-mini');
+  mini.hidden = !me.photo_url;
+  if (me.photo_url) mini.src = me.photo_url;
+  const first = (me.name || '').trim().split(/\s+/)[0];
+  $('wallet-hi').textContent = first ? `привет, ${first})` : 'баланс';
+
   const name = $('me-name');
   name.textContent = me.name;
   if (me.is_premium) name.appendChild(icon('star'));
   $('me-nick').textContent = me.username ? '@' + me.username : 'без ника';
-  $('me-id').textContent = 'ID: ' + me.id;
+  $('me-id').textContent = 'ID ' + me.id;
 
   $('coins-value').textContent = me.stats.coins || 0;
-  $('coins-unit').textContent = me.coin_name;
-  $('coins-label').textContent = 'ими оплачивается подписка';
+  $('coins-label').textContent = me.coin_name;
+  syncCoinPill();
+
+  // Подписи в меню — по делу, чтобы не открывать пункт ради одной цифры.
+  const ref = me.referral || {};
+  $('menu-referral').textContent = ref.invited
+    ? `пришло ${ref.invited} · заработано ${ref.earned} ${me.coin_name}`
+    : `${ref.coins || 0} ${me.coin_name} за каждого`;
+  const stars = state.paid_max_stars || 0;
+  $('menu-paid').textContent = stars
+    ? `до ${stars} \u2605 за сообщение` : 'не писать в платные';
+  $('menu-stats').textContent = `отправлено ${me.stats.sent || 0} · `
+    + `рассылок ${me.stats.campaigns || 0}`;
 
   fillStats($('me-stats'), [
     ['Аккаунтов', me.stats.accounts || 0],
@@ -498,12 +779,19 @@ function renderProfile() {
     ['Звёзд потрачено', me.stats.stars || 0],
   ]);
 
-  fillStats($('coin-history'), me.history.length
-    ? me.history.map((op) => [
-      op.reason,
-      (op.delta > 0 ? '+' : '') + op.delta,
-    ])
-    : [['Пока пусто', '—']]);
+  const history = me.history.length
+    ? me.history.map((op) => [op.reason, (op.delta > 0 ? '+' : '') + op.delta])
+    : [['Пока пусто', '—']];
+  paged($('coin-history'), history, 8, ([label, value]) => {
+    const row = document.createElement('div');
+    row.className = 'row stat';
+    const left = document.createElement('span');
+    left.textContent = label;
+    const right = document.createElement('span');
+    right.textContent = value;
+    row.append(left, right);
+    return row;
+  });
 
   renderReferral();
 
@@ -730,7 +1018,11 @@ function openTopup() {
 function renderMethods() {
   const box = $('pay-methods');
   box.textContent = '';
+  // Способ выбран — список сворачивается до него одного: пачки и кнопка
+  // оплаты нужнее на экране, чем три способа, которые уже не выбрали.
+  const picked = topup.method;
   for (const method of methods()) {
+    if (picked && method.id !== picked) continue;
     const row = document.createElement('button');
     row.className = 'row';
     row.appendChild(icon(method.icon, 'lead'));
@@ -745,13 +1037,19 @@ function renderMethods() {
     note.textContent = method.note;
     body.append(title, note);
     row.appendChild(body);
-    row.appendChild(icon('chevron'));
+    if (picked) {
+      note.textContent = 'нажмите, чтобы сменить способ';
+      row.appendChild(icon('refresh'));
+    } else {
+      row.appendChild(icon('chevron'));
+    }
 
     row.onclick = () => {
-      topup = { method: method.id, coins: null };
+      topup = picked ? { method: null, coins: null } : { method: method.id, coins: null };
       haptic('light');
       renderMethods();
       renderTopupPacks();
+      refit();
     };
     box.appendChild(row);
   }
@@ -764,6 +1062,7 @@ function currentMethod() {
 function renderTopupPacks() {
   const method = currentMethod();
   $('topup-body').hidden = !method;
+  $('topup-pay').hidden = !method;
   if (!method) return;
 
   if (topup.coins === null) {
@@ -934,6 +1233,7 @@ function renderMain() {
   renderFaq();
   renderTickets();
   renderProfile();
+  setMailTab(mailTab);
   setPane(pane);
   show('main');
 }
@@ -1098,6 +1398,8 @@ async function openLog(campaign) {
   $('log-title').textContent = 'Журнал: ' + campaign.title;
   const box = $('log-list');
   box.textContent = '';
+  pages['log-list'] = 0;
+  unpage(box);
   $('log-empty').hidden = true;
   show('log');
 
@@ -1111,7 +1413,7 @@ async function openLog(campaign) {
     $('log-empty').hidden = false;
     return;
   }
-  for (const send of result.sends) {
+  paged(box, result.sends, 10, (send) => {
     const row = document.createElement('div');
     row.className = 'log-row';
 
@@ -1135,9 +1437,8 @@ async function openLog(campaign) {
       hour: '2-digit', minute: '2-digit',
     });
     row.appendChild(when);
-
-    box.appendChild(row);
-  }
+    return row;
+  });
 }
 
 async function refresh() {
@@ -1247,7 +1548,7 @@ function renderMaterials(box, selected, onPick, multi) {
       + 'и нажмите «Перечитать «Избранное»» ниже.');
     return;
   }
-  for (const material of picker.materials) {
+  paged(box, picker.materials, 6, (material) => {
     const row = document.createElement('label');
     row.className = 'pick';
 
@@ -1273,9 +1574,8 @@ function renderMaterials(box, selected, onPick, multi) {
     title.className = 'pick-title';
     title.textContent = material.preview || 'Сообщение';
     row.appendChild(title);
-
-    box.appendChild(row);
-  }
+    return row;
+  });
 }
 
 
@@ -1409,7 +1709,7 @@ const TICKET_STATUS = {
 function renderFaq() {
   const box = $('faq');
   box.textContent = '';
-  for (const item of state.faq || []) {
+  paged(box, state.faq || [], 6, (item) => {
     const wrap = document.createElement('div');
     wrap.className = 'faq-item';
 
@@ -1428,8 +1728,8 @@ function renderFaq() {
       question.classList.toggle('open', !answer.hidden);
     };
     wrap.append(question, answer);
-    box.appendChild(wrap);
-  }
+    return wrap;
+  });
 }
 
 function renderTickets() {
@@ -1438,7 +1738,11 @@ function renderTickets() {
   box.textContent = '';
   $('tickets-empty').hidden = list.length > 0;
 
-  for (const item of list) {
+  box.hidden = !list.length;
+  const answered = list.filter((item) => item.status === 'answered').length;
+  $('menu-support-count').hidden = !answered;
+  $('menu-support-count').textContent = answered;
+  paged(box, list, 5, (item) => {
     const row = document.createElement('button');
     row.className = 'row';
     const body = document.createElement('div');
@@ -1461,8 +1765,8 @@ function renderTickets() {
     }
     row.appendChild(icon('chevron', 'ic-s'));
     row.onclick = () => openTicket(item);
-    box.appendChild(row);
-  }
+    return row;
+  });
 }
 
 async function openTicket(item) {
@@ -1632,7 +1936,9 @@ function renderWatches() {
   box.textContent = '';
   $('watches-empty').hidden = list.length > 0;
 
-  for (const watch of list) {
+  box.hidden = !list.length;
+  $('seg-watches').textContent = list.length || '';
+  paged(box, list, 3, (watch) => {
     const card = document.createElement('div');
     card.className = 'campaign';
 
@@ -1669,13 +1975,14 @@ function renderWatches() {
       () => toggleWatch(watch),
     ));
     actions.appendChild(smallButton('Изменить', () => openWatch(watch)));
-    const drop = smallButton('Удалить', () => removeWatch(watch));
-    drop.classList.add('danger');
+    const drop = smallButton('', () => removeWatch(watch));
+    drop.classList.add('danger', 'icon-only');
+    drop.setAttribute('aria-label', 'Удалить');
+    drop.appendChild(icon('trash'));
     actions.appendChild(drop);
     card.appendChild(actions);
-
-    box.appendChild(card);
-  }
+    return card;
+  });
 }
 
 function watchBadge(watch) {
@@ -1757,12 +2064,47 @@ async function openWatch(watch) {
   setWatchPick(watching.pick);
   fail('watch-err', '');
   renderWatchVariants();
+  $('watch-steps').hidden = Boolean(watch);
+  pages['watch-channels'] = 0;
+  watchStage(watch ? 1 : 0);
   show('watch');
 
   hintInto($('watch-channels'), 'Загружаем…');
   await loadMaterials(watching.accountId);
   renderWatchVariants();
   if (!watch) await loadWatchChannels();
+}
+
+/** Шаг формы автокомментария: 0 — канал, 1 — ответ. */
+function watchStage(stage) {
+  watching.stage = stage;
+  const fresh = !watching.id;
+  $('watch-stage-where').hidden = stage !== 0;
+  $('watch-stage-what').hidden = stage !== 1;
+  for (const item of document.querySelectorAll('[data-wstep]')) {
+    const index = Number(item.dataset.wstep);
+    item.classList.toggle('active', index === stage);
+    item.classList.toggle('done', index < stage);
+  }
+  $('watch-back').textContent = fresh && stage === 1 ? 'Назад' : 'Отмена';
+  $('watch-save').textContent = fresh && stage === 0
+    ? 'Далее' : (fresh ? 'Включить' : 'Сохранить');
+  fail('watch-err', '');
+  window.scrollTo(0, 0);
+}
+
+function watchNext(button) {
+  if (watching.stage === 0) {
+    if (!watching.chatId) return fail('watch-err', 'Выберите канал.');
+    haptic('light');
+    return watchStage(1);
+  }
+  return saveWatch(button);
+}
+
+function watchBack() {
+  if (!watching.id && watching.stage === 1) return watchStage(0);
+  return home();
 }
 
 /** Каналы аккаунта. Только каналы: комментарии бывают под их постами. */
@@ -1777,7 +2119,7 @@ async function loadWatchChannels() {
     return hintInto(box, 'Каналов не нашлось. Подпишитесь на канал с этого '
       + 'аккаунта и обновите список чатов на шаге «Куда» новой рассылки.');
   }
-  for (const channel of channels) {
+  paged(box, channels, 6, (channel) => {
     const row = document.createElement('label');
     row.className = 'pick';
     const input = document.createElement('input');
@@ -1792,8 +2134,8 @@ async function loadWatchChannels() {
     title.className = 'pick-title';
     title.textContent = channel.title;
     row.appendChild(title);
-    box.appendChild(row);
-  }
+    return row;
+  });
 }
 
 function renderWatchVariants() {
@@ -2153,6 +2495,7 @@ function setTab(name) {
 }
 
 function hintInto(box, text) {
+  unpage(box);
   box.textContent = '';
   const hint = document.createElement('p');
   hint.className = 'hint';
@@ -2196,7 +2539,7 @@ function renderChatList() {
     return;
   }
 
-  for (const chat of rows) {
+  paged(box, rows, 8, (chat) => {
     const row = document.createElement('label');
     row.className = 'pick';
 
@@ -2218,9 +2561,8 @@ function renderChatList() {
     kind.className = 'pick-kind';
     kind.textContent = KINDS[chat.kind] || '';
     row.appendChild(kind);
-
-    box.appendChild(row);
-  }
+    return row;
+  });
   countPicked();
 }
 
@@ -2243,7 +2585,7 @@ function renderFolders() {
   // можно снять галочкой: папка в Telegram нередко собрана не под
   // рассылку, и слать во всё подряд человек обычно не хочет.
   const known = new Set(picker.chats.map((chat) => chat.id));
-  for (const folder of picker.folders) {
+  paged(box, picker.folders, 6, (folder) => {
     const inList = folder.chat_ids.filter((id) => known.has(id));
     const picked = inList.length
       && inList.every((id) => draft.chatIds.has(id));
@@ -2278,8 +2620,8 @@ function renderFolders() {
       renderChatList();
       renderFolders();
     };
-    box.appendChild(row);
-  }
+    return row;
+  });
 }
 
 function renderIntervals() {
@@ -2474,7 +2816,8 @@ async function adminFind() {
     return;
   }
 
-  for (const person of result.users) {
+  pages['admin-results'] = 0;
+  paged(box, result.users, 6, (person) => {
     const row = document.createElement('button');
     row.className = 'row';
     const body = document.createElement('div');
@@ -2489,8 +2832,8 @@ async function adminFind() {
     body.append(title, note);
     row.append(body, icon('chevron'));
     row.onclick = () => adminOpen(person.id);
-    box.appendChild(row);
-  }
+    return row;
+  });
 }
 
 async function adminOpen(userId) {
@@ -2834,8 +3177,19 @@ function wire() {
     button.onclick = cancelFlow;
   }
   for (const button of document.querySelectorAll('[data-home]')) {
-    button.onclick = refresh;
+    button.onclick = home;
   }
+  for (const button of document.querySelectorAll('[data-sub]')) {
+    if (button.classList.contains('sub')) continue;
+    button.onclick = () => openSub(button.dataset.sub);
+  }
+  for (const button of document.querySelectorAll('[data-open-topup]')) {
+    button.onclick = openTopup;
+  }
+  for (const item of document.querySelectorAll('#mail-seg .seg-item')) {
+    item.onclick = () => { haptic('light'); setMailTab(item.dataset.mail); };
+  }
+  $('coin-pill').onclick = openTopup;
 
   $('admin-find').onclick = adminFind;
   $('admin-query').addEventListener('keydown', (e) => {
@@ -2852,7 +3206,15 @@ function wire() {
   };
 
   $('add-watch').onclick = () => openWatch(null);
-  $('watch-save').onclick = (event) => saveWatch(event.currentTarget);
+  $('watch-save').onclick = (event) => watchNext(event.currentTarget);
+  $('watch-back').onclick = watchBack;
+  for (const item of document.querySelectorAll('[data-wstep]')) {
+    item.onclick = () => {
+      const to = Number(item.dataset.wstep);
+      if (to === 1 && !watching.chatId) return fail('watch-err', 'Выберите канал.');
+      watchStage(to);
+    };
+  }
   $('watch-variant-add').onclick = () => {
     if (watching.texts.length >= state.limits.max_variants) return;
     watching.texts.push('');
@@ -2864,16 +3226,6 @@ function wire() {
   }
 
   $('open-topup').onclick = openTopup;
-  // «Подписка» и «История» в кошельке не открывают новых экранов, а
-  // ведут к своим разделам профиля: всё это уже есть ниже, и второй
-  // экран с тем же содержимым только запутал бы.
-  for (const button of document.querySelectorAll('[data-scroll]')) {
-    button.onclick = () => {
-      const target = $(button.dataset.scroll);
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      haptic('light');
-    };
-  }
   $('topup-custom').onclick = askTopupCustom;
   $('topup-own-apply').onclick = applyTopupCustom;
   $('topup-own-input').onkeydown = (event) => {
@@ -2888,7 +3240,10 @@ function wire() {
   $('step-next').onclick = stepNext;
   $('step-back').onclick = stepBack;
   $('variant-add').onclick = addVariant;
-  $('chat-search').addEventListener('input', renderChatList);
+  $('chat-search').addEventListener('input', () => {
+    pages['chat-list'] = 0;
+    renderChatList();
+  });
   for (const tab of document.querySelectorAll('.step')) {
     tab.onclick = () => jumpStep(Number(tab.dataset.step));
   }
@@ -2942,6 +3297,20 @@ function wire() {
   if (tg && tg.BackButton) tg.BackButton.onClick(goBack);
 }
 
+/** Тема — по клиенту Telegram: тёмный Telegram получает тёмное
+ *  приложение. Шапка и фон клиента красятся в тон, иначе над
+ *  приложением висит полоса чужого цвета. */
+function applyTheme() {
+  const dark = tg && tg.colorScheme === 'dark';
+  document.body.classList.toggle('dark', dark);
+  const bg = dark ? '#050506' : '#F2F3F5';
+  try {
+    if (tg.setHeaderColor) tg.setHeaderColor(bg);
+    if (tg.setBackgroundColor) tg.setBackgroundColor(bg);
+    if (tg.setBottomBarColor) tg.setBottomBarColor(bg);
+  } catch (error) { /* старый клиент — не беда */ }
+}
+
 async function boot() {
   if (!tg || !tg.initData) {
     // Ни SDK, ни подписи — значит, страницу открыли не из Telegram.
@@ -2951,12 +3320,9 @@ async function boot() {
   }
   tg.ready();
   tg.expand();
-  // Шапка и фон клиента — в тон приложению. Без этого над светлым
-  // стеклом висит чёрная полоса из тёмной темы Telegram.
-  try {
-    if (tg.setHeaderColor) tg.setHeaderColor('#f2f4f8');
-    if (tg.setBackgroundColor) tg.setBackgroundColor('#eef0f5');
-  } catch (error) { /* старый клиент — не беда */ }
+  applyTheme();
+  if (tg.onEvent) tg.onEvent('themeChanged', applyTheme);
+  foldHints();
   wire();
   await refresh();
   // Вход, начатый до сворачивания приложения, продолжается с того же

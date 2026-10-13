@@ -370,6 +370,11 @@ async def check_api() -> None:
         # Каталог наружу не отдаём: файлы перечислены явно.
         sneak = await client.get("/app.py")
         check("посторонние файлы не отдаются", sneak.status == 404)
+        for name in webapp.FX_FILES:
+            picture = await client.get("/fx/" + name)
+            check(f"оформление {name} отдаётся", picture.status == 200)
+        sneak = await client.get("/fx/..%2Fapp.js")
+        check("из папки оформления не выйти", sneak.status == 404)
 
         blank = await client.post("/api/state", json={})
         check("состояние без подписи: отказ", blank.status == 401)

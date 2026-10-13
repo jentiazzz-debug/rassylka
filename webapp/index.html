@@ -3,11 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F2F3F5">
 <title>Рассылка</title>
 <!-- SDK Telegram обязателен и обязан идти с telegram.org: он отдаёт
      initData (по ней сервер узнаёт, кто открыл приложение), тему клиента
      и кнопку «назад». Своей копией его не заменить. -->
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<!-- Три голоса Solutions Design: Unbounded — заголовки, Onest —
+     интерфейс, Caveat — рукописные пометки. Шрифты не блокируют
+     отрисовку: если Google медленный, приложение открывается системным
+     шрифтом, а не белым экраном. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Onest:wght@400;500;600;700;800&family=Unbounded:wght@700;800;900&display=swap" media="print" onload="this.media='all'">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -184,12 +192,17 @@
   <!-- Шапка. Не «для красоты»: мини-апп открывается поверх переписки, и
        без имени на экране непонятно, чьё это окно вообще. -->
   <header class="brand">
-    <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-      <use href="#i-bubbles"/>
-    </svg>
-    <div>
+    <span class="brand-mark"><img src="fx/cat-mark.jpg" alt="" width="256" height="256"></span>
+    <div class="brand-text">
       <div class="brand-name">Solutions</div>
-      <div class="brand-sub">AutoPosting</div>
+      <div class="brand-sub">рассылка</div>
+    </div>
+    <div class="brand-side">
+      <img id="me-mini" class="me-mini" alt="" hidden>
+      <button class="coin-pill" id="coin-pill" hidden aria-label="Баланс">
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-coin"/></svg>
+        <span id="coin-pill-value">0</span>
+      </button>
     </div>
   </header>
 
@@ -205,120 +218,91 @@
 
   <!-- Профиль: кто вы, монеты, подписка, тарифы. -->
   <div id="pane-profile" class="pane">
-    <div class="me">
-      <img id="me-photo" class="me-photo" alt="" hidden>
-      <div id="me-letter" class="me-photo me-letter"></div>
-      <div class="me-body">
-        <div class="me-name" id="me-name">—</div>
-        <div class="hint" id="me-nick"></div>
-        <div class="hint small" id="me-id"></div>
+    <!-- Кошелёк: баланс и подписка — одна карточка, это про одно и то
+         же. Две главные кнопки прямо на ней, остальное — в меню ниже. -->
+    <div class="wallet">
+      <img class="wallet-cat" src="fx/cat-hero.jpg" alt="" width="720" height="540">
+      <span class="hand" id="wallet-hi">баланс</span>
+      <div class="wallet-balance">
+        <span class="wallet-coins" id="coins-value">0</span>
+        <span class="wallet-unit" id="coins-label">монет</span>
+      </div>
+      <div id="sub-card" class="wallet-sub">
+        <span id="sub-title">—</span>
+      </div>
+      <p id="sub-note" hidden></p>
+      <div class="wallet-actions">
+        <button id="open-topup" class="btn primary">
+          <svg class="ic" viewBox="0 0 24 24"><use href="#i-wallet"/></svg>
+          Пополнить
+        </button>
+        <button class="btn ghost" data-sub="plans">Подписка</button>
       </div>
     </div>
 
     <!-- Баннер владельца: задаётся из /admin в боте, показывается всем.
          Нет заголовка — блока нет вовсе. -->
     <div class="panel banner" id="app-banner" hidden>
-      <div class="banner-title" id="banner-title"></div>
-      <div class="banner-text" id="banner-text"></div>
-    </div>
-
-    <!-- Баланс и состояние подписки — одна панель: это про одно и то же,
-         и разносить их по двум карточкам незачем. -->
-    <!-- Кошелёк. Карточка, а не строчка в панели: баланс — главное,
-         что человек ищет в профиле, и главное, что он здесь делает, —
-         пополнить. Три круглые кнопки под числом — ровно те три
-         действия, за которыми сюда приходят, и все в один тап. -->
-    <div class="wallet">
-      <div class="wallet-top">
-        <span class="wallet-chip">
-          <svg class="ic" viewBox="0 0 24 24"><use href="#i-coin"/></svg>
-        </span>
-        <span class="wallet-label">Баланс</span>
-      </div>
-      <div class="wallet-sum">
-        <span class="wallet-value" id="coins-value">0</span>
-        <span class="wallet-unit" id="coins-unit">Slx</span>
-      </div>
-      <div class="wallet-note" id="coins-label">ими оплачивается подписка</div>
-
-      <div class="wallet-actions">
-        <button class="wallet-act" id="open-topup">
-          <span class="wallet-round">
-            <svg class="ic" viewBox="0 0 24 24"><use href="#i-plus"/></svg>
-          </span>
-          Пополнить
-        </button>
-        <button class="wallet-act" data-scroll="plans">
-          <span class="wallet-round">
-            <svg class="ic" viewBox="0 0 24 24"><use href="#i-star"/></svg>
-          </span>
-          Подписка
-        </button>
-        <button class="wallet-act" data-scroll="coin-history">
-          <span class="wallet-round">
-            <svg class="ic" viewBox="0 0 24 24"><use href="#i-clock"/></svg>
-          </span>
-          История
-        </button>
+      <span class="tile"><svg class="ic" viewBox="0 0 24 24"><use href="#i-megaphone"/></svg></span>
+      <div>
+        <div class="banner-title" id="banner-title"></div>
+        <div class="banner-text" id="banner-text"></div>
       </div>
     </div>
 
-    <div id="sub-card" class="panel sub-strip">
-      <div class="sub-title" id="sub-title">—</div>
-      <div class="sub-note" id="sub-note"></div>
+    <!-- Меню вместо простыни. Раньше всё это шло одной лентой на десять
+         экранов; теперь каждый пункт — своя страница, а профиль целиком
+         помещается в экран. -->
+    <div class="panel" id="profile-menu">
+      <button class="row" data-sub="referral">
+        <span class="tile"><svg class="ic" viewBox="0 0 24 24"><use href="#i-users"/></svg></span>
+        <span class="row-body"><span class="row-title">Пригласить друзей</span>
+          <span class="row-note" id="menu-referral">бонус за каждого</span></span>
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg>
+      </button>
+      <button class="row" data-sub="support">
+        <span class="tile"><svg class="ic" viewBox="0 0 24 24"><use href="#i-bubbles"/></svg></span>
+        <span class="row-body"><span class="row-title">Поддержка</span>
+          <span class="row-note">обращения и ответы</span></span>
+        <span class="row-count" id="menu-support-count" hidden></span>
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg>
+      </button>
+      <button class="row" data-sub="faq">
+        <span class="tile"><svg class="ic" viewBox="0 0 24 24"><use href="#i-list"/></svg></span>
+        <span class="row-body"><span class="row-title">Частые вопросы</span></span>
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg>
+      </button>
+      <button class="row" data-sub="paid">
+        <span class="tile"><svg class="ic" viewBox="0 0 24 24"><use href="#i-star"/></svg></span>
+        <span class="row-body"><span class="row-title">Платные чаты</span>
+          <span class="row-note" id="menu-paid">не писать</span></span>
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg>
+      </button>
+      <button class="row" data-sub="stats">
+        <span class="tile"><svg class="ic" viewBox="0 0 24 24"><use href="#i-clock"/></svg></span>
+        <span class="row-body"><span class="row-title">Сводка и история</span>
+          <span class="row-note" id="menu-stats">отправлено 0</span></span>
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg>
+      </button>
+      <button class="row" data-sub="legal">
+        <span class="tile"><svg class="ic" viewBox="0 0 24 24"><use href="#i-file"/></svg></span>
+        <span class="row-body"><span class="row-title">Документы</span></span>
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg>
+      </button>
     </div>
-
-    <h2 class="section-title">Платные чаты</h2>
-    <div class="panel">
-      <div class="row own">
-        <input class="field own-input" id="paid-limit" type="number"
-               inputmode="numeric" min="0" placeholder="0 — не писать">
-        <button class="btn small own-apply" id="paid-limit-save">Ок</button>
-      </div>
-    </div>
-    <p class="hint small pad">
-      Часть групп берёт звёзды за каждое сообщение. Здесь потолок: чат
-      дороже — рассылка его пропустит и напишет об этом в журнале.
-      <b>0 — не писать в платные вовсе.</b>
-      <br><br>
-      Звёзды списываются с самого подключённого аккаунта, а не с баланса
-      в боте: это ваши деньги, и тратить их молча нельзя.
-    </p>
-
-    <h2 class="section-title">Частые вопросы</h2>
-    <div class="panel" id="faq"></div>
-
-    <h2 class="section-title">Поддержка</h2>
-    <div class="panel" id="tickets"></div>
-    <p id="tickets-empty" class="hint pad" hidden>
-      Обращений нет. Если что-то не работает или непонятно — напишите,
-      ответ придёт сюда и в личку от бота.
-    </p>
-    <button id="add-ticket" class="btn ghost">Написать в поддержку</button>
-
-    <h2 class="section-title">Подписка за монеты</h2>
-    <div class="panel" id="plans"></div>
-    <p class="hint small pad">
-      Подписка снимает подпись о боте в конце сообщений и продлевает
-      доступ к рассылкам.
-    </p>
-
-    <h2 class="section-title">Приглашайте друзей</h2>
-    <div class="panel" id="referral"></div>
-
-    <h2 class="section-title">Сводка</h2>
-    <div class="panel" id="me-stats"></div>
-
-    <h2 class="section-title">История монет</h2>
-    <div class="panel" id="coin-history"></div>
-
-    <h2 class="section-title">Документы</h2>
-    <div class="panel" id="legal-links"></div>
   </div>
 
   <!-- Рассылки. -->
   <div id="pane-mail" class="pane" hidden>
-    <h2 class="section-title">Рассылки</h2>
+    <!-- Рассылки и автокомментарии — переключателем, а не друг под
+         другом: два списка подряд и есть та лента, которую не долистать
+         до второго. -->
+    <div class="seg" id="mail-seg">
+      <button class="seg-item active" data-mail="campaigns">Рассылки <small id="seg-campaigns"></small></button>
+      <button class="seg-item" data-mail="watches">Комментарии <small id="seg-watches"></small></button>
+    </div>
+
+    <div id="mail-campaigns" class="pane">
     <div class="panel" id="campaigns"></div>
     <p id="campaigns-empty" class="hint pad" hidden>
       Рассылок пока нет. Выберите чаты или папку, задайте сообщение и
@@ -326,18 +310,17 @@
     </p>
     <button id="add-campaign" class="btn primary">Новая рассылка</button>
     <p id="campaign-note" class="hint center" hidden></p>
+    </div>
 
-    <!-- Автокомментарии живут в том же разделе, что и рассылки: это
-         тоже «что аккаунт пишет сам», просто повод другой. Отдельная
-         вкладка ради одного списка была бы лишней. -->
-    <h2 class="section-title">Комментарии под постами</h2>
+    <div id="mail-watches" class="pane" hidden>
     <div class="panel" id="watches"></div>
     <p id="watches-empty" class="hint pad" hidden>
       Аккаунт может отвечать под каждым новым постом канала — в его
       группе обсуждений. Удобно для раздач: комментарий появляется сразу
       после поста, без вашего участия.
     </p>
-    <button id="add-watch" class="btn ghost">Новый автокомментарий</button>
+    <button id="add-watch" class="btn primary">Новый автокомментарий</button>
+    </div>
   </div>
 
   <!-- Аккаунты. -->
@@ -386,19 +369,98 @@
        заполнения формы. -->
   <nav id="tabbar" hidden>
     <button class="tab-item active" data-pane="profile">
-      <svg class="ic" viewBox="0 0 24 24"><use href="#i-user"/></svg>Профиль
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-user"/></svg><span>Профиль</span>
     </button>
     <button class="tab-item" data-pane="mail">
-      <svg class="ic" viewBox="0 0 24 24"><use href="#i-megaphone"/></svg>Рассылки
-    </button>
-    <button class="tab-item" data-pane="admin" id="tab-admin" hidden>
-      <svg class="ic" viewBox="0 0 24 24"><use href="#i-shield"/></svg>
-      Админ
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-megaphone"/></svg><span>Рассылки</span>
     </button>
     <button class="tab-item" data-pane="accounts">
-      <svg class="ic" viewBox="0 0 24 24"><use href="#i-key"/></svg>Аккаунты
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-key"/></svg><span>Аккаунты</span>
+    </button>
+    <button class="tab-item" data-pane="admin" id="tab-admin" hidden>
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-shield"/></svg><span>Админ</span>
     </button>
   </nav>
+
+  <!-- Страницы профиля. Всё, что раньше шло одной простынёй под
+       балансом, теперь открывается из меню — по одному разделу. -->
+  <section id="screen-more" class="screen" hidden>
+    <div class="page-head">
+      <span class="hand" id="more-hand"></span>
+      <h1 class="display" id="more-title"></h1>
+    </div>
+
+    <div class="sub" data-sub="plans" hidden>
+      <div class="panel" id="plans"></div>
+      <p class="hint small pad">
+        Подписка снимает подпись о боте в конце сообщений и продлевает
+        доступ к рассылкам.
+      </p>
+      <button class="btn primary" data-open-topup>
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-wallet"/></svg>
+        Пополнить баланс
+      </button>
+      <p class="hint small pad center">
+        Telegram Stars, банковская карта, СБП или криптовалюта.
+      </p>
+    </div>
+
+    <div class="sub" data-sub="referral" hidden>
+      <div class="panel" id="referral"></div>
+    </div>
+
+    <div class="sub" data-sub="support" hidden>
+      <div class="panel" id="tickets"></div>
+      <p id="tickets-empty" class="hint pad" hidden>
+        Обращений нет. Если что-то не работает или непонятно — напишите,
+        ответ придёт сюда и в личку от бота.
+      </p>
+      <button id="add-ticket" class="btn primary">Написать в поддержку</button>
+    </div>
+
+    <div class="sub" data-sub="faq" hidden>
+      <div class="panel" id="faq"></div>
+    </div>
+
+    <div class="sub" data-sub="paid" hidden>
+      <div class="panel">
+        <div class="row own">
+          <input class="field own-input" id="paid-limit" type="number"
+                 inputmode="numeric" min="0" placeholder="0 — не писать">
+          <button class="btn small own-apply" id="paid-limit-save">Ок</button>
+        </div>
+      </div>
+      <p class="hint small pad">
+        Часть групп берёт звёзды за каждое сообщение. Здесь потолок: чат
+        дороже — рассылка его пропустит и напишет об этом в журнале.
+        <b>0 — не писать в платные вовсе.</b>
+      </p>
+      <p class="hint small pad">
+        Звёзды списываются с самого подключённого аккаунта, а не с баланса
+        в боте: это ваши деньги, и тратить их молча нельзя.
+      </p>
+    </div>
+
+    <div class="sub" data-sub="stats" hidden>
+      <div class="panel me">
+        <img id="me-photo" class="me-photo" alt="" hidden>
+        <div id="me-letter" class="me-photo me-letter"></div>
+        <div class="me-body">
+          <div class="me-name" id="me-name">—</div>
+          <div class="me-meta"><span id="me-nick"></span> · <span id="me-id"></span></div>
+        </div>
+      </div>
+      <div class="panel" id="me-stats"></div>
+      <h2 class="section-title">История монет</h2>
+      <div class="panel" id="coin-history"></div>
+    </div>
+
+    <div class="sub" data-sub="legal" hidden>
+      <div class="panel" id="legal-links"></div>
+    </div>
+
+    <button class="btn ghost" data-home>Назад</button>
+  </section>
 
   <!-- Создание рассылки. Три шага, а не одна простыня: полей много, и
        на телефоне длинная форма означает бесконечную прокрутку — легко
@@ -515,24 +577,33 @@
   <section id="screen-watch" class="screen" hidden>
     <h2 class="section-title" id="watch-head">Новый автокомментарий</h2>
 
+    <!-- Два шага, как у рассылки: сначала канал, потом ответ. Одной
+         формой это не помещалось в экран. У готового наблюдения канал
+         не меняется, и шаг всего один. -->
+    <div class="steps" id="watch-steps">
+      <button class="step active" data-wstep="0"><b>1</b>Канал</button>
+      <button class="step" data-wstep="1"><b>2</b>Ответ</button>
+    </div>
+
+    <div id="watch-stage-where" class="pane">
     <div id="watch-account-pick" hidden>
       <label class="label" for="watch-account">Аккаунт</label>
       <select id="watch-account" class="field"></select>
     </div>
 
-    <div id="watch-channel-box">
-      <p class="hint pad">
-        Канал, под постами которого отвечать. В списке только каналы —
-        комментарии бывают под их постами, а не в группах.
-      </p>
+    <div id="watch-channel-box" class="pane">
+      <label class="label">Под постами какого канала отвечать</label>
       <div id="watch-channels" class="picker"></div>
       <p class="hint small pad">
-        Аккаунт должен состоять в группе обсуждений этого канала: зайдите
-        с него в комментарии под любым постом и вступите. Без этого
-        Telegram не даст написать, и наблюдение встанет.
+        В списке только каналы — комментарии бывают под их постами, а не
+        в группах. Аккаунт должен состоять в группе обсуждений этого
+        канала: зайдите с него в комментарии под любым постом и вступите.
+        Без этого Telegram не даст написать, и наблюдение встанет.
       </p>
     </div>
+    </div>
 
+    <div id="watch-stage-what" class="pane">
     <div id="watch-title" class="panel row" hidden></div>
 
     <h2 class="section-title">Что отвечать</h2>
@@ -568,10 +639,11 @@
       Другие числа — вилка: ответ уйдёт через случайное время между
       ними. Это выглядит человечнее, но медленнее.
     </p>
+    </div>
 
     <p id="watch-err" class="err pad" hidden></p>
     <div class="nav-row">
-      <button class="btn ghost" data-home>Отмена</button>
+      <button class="btn ghost" id="watch-back">Отмена</button>
       <button id="watch-save" class="btn primary">Включить</button>
     </div>
   </section>
@@ -676,11 +748,13 @@
           <span class="pay-total" id="topup-total">—</span>
         </div>
       </div>
-      <button id="topup-pay" class="btn primary">Оплатить</button>
       <p class="hint small pad" id="topup-note"></p>
     </div>
 
-    <button class="btn ghost" data-home>Назад</button>
+    <div class="nav-row">
+      <button class="btn ghost" data-home>Назад</button>
+      <button id="topup-pay" class="btn primary" hidden>Оплатить</button>
+    </div>
   </section>
 
   <!-- Журнал отправок одной рассылки. -->
